@@ -1,9 +1,23 @@
+# https://doc.rust-lang.org/cargo/reference/manifest.html
+
 [package]
 name = "uringy"
 version = "0.1.0"
 authors = ["Dennis Krasnov <dennis@krasnov.dev>"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[workspace]
+members = [
+    "examples/limit_concurrency",
+#    "uringy-http",
+]
 
 [dependencies]
+libc = "0.2.95"
+parking = "2.0.0"
+futures = "0.3.16"
+waker-fn = "1.1.0"
+
+[dev-dependencies]
+async-channel = "1.6.1"
