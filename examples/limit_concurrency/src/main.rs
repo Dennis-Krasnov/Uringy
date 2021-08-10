@@ -6,9 +6,9 @@ use async_lock::Semaphore;
 use uringy::spawn;
 use std::ops::{Mul, Div};
 
-const N: u32 = 1_000_000;
+const N: u32 = 100_000;
 const MAX_CONCURRENT: usize = 100;
-const SLEEP_TIME: u64 = 1;
+const SLEEP_TIME: u64 = 10;
 
 // TODO: #[uringy::main]
 fn main() {
