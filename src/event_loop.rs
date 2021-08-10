@@ -7,6 +7,8 @@ use std::task::{Context, Poll};
 use slotmap::{DefaultKey, SlotMap};
 use waker_fn::waker_fn;
 
+// TODO: more descriptive error messages
+
 /// ...
 pub struct EventLoop {
     ready_futures_tx: crossbeam_channel::Sender<DefaultKey>,
@@ -42,15 +44,17 @@ impl EventLoop {
                 ready_futures_tx.send(key).unwrap();
             });
 
-            let mut context = Context::from_waker(&waker);
+            let context = &mut Context::from_waker(&waker);
 
-            match Pin::new(future).poll(&mut context) {
-                Poll::Ready(_) => { self.active_futures.remove(key); }
+            match Pin::new(future).poll(context) {
+                Poll::Ready(_) => {
+                    self.active_futures.remove(key).unwrap();
+
+                    if self.active_futures.is_empty() {
+                        break;
+                    }
+                }
                 Poll::Pending => { continue; }
-            }
-
-            if self.active_futures.is_empty() {
-                break;
             }
         }
     }
