@@ -43,7 +43,7 @@ jobs:
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Benchmark
-        run: cargo benchark
+        run: cargo bench
         working-directory: ./benchmark
 
   build:
