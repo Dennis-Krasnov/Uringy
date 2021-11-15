@@ -1,23 +1,23 @@
-# https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [package]
 name = "uringy"
 version = "0.1.0"
 authors = ["Dennis Krasnov <dennis@krasnov.dev>"]
-edition = "2018"
-
+edition = "2021"
 
 [workspace]
 members = [
-    "examples/limit_concurrency",
-#    "uringy-http",
+    "benchmark",
 ]
 
 [dependencies]
-#libc = "0.2.95"
-crossbeam-channel = "0.5.1"
+concurrent-queue = "1.2.2"
+
 waker-fn = "1.1.0"
-slotmap = "1.0.5"
+async-task = "4.0.3"
+
+libc = "0.2.103"
+futures-lite = "1.12.0"
+scoped-tls = "1.0.0"
 
 [dev-dependencies]
 async-channel = "1.6.1"

@@ -1,130 +1,117 @@
 #![warn(missing_docs)]
 
-use std::cell::{RefCell, UnsafeCell};
+//! ...
+
 use std::future::Future;
+
+use scoped_tls::scoped_thread_local;
 
 use crate::event_loop::EventLoop;
 
 mod event_loop;
+pub mod sync;
 
-thread_local! {
-    /// ...
-    static CONTEXT: RefCell<Option<UnsafeCell<EventLoop>>> = RefCell::new(None);
-}
+scoped_thread_local!(static LOCAL_EVENT_LOOP: EventLoop);
 
 /// ...
-///
-/// # Panics
-///
-/// Panics if nested...
-///
-/// # Examples
-///
-/// ### Run on current thread
-/// ```
-/// uringy::block_on(async {});
-/// ```
-///
-/// ### Run on new thread
-/// ```
-/// std::thread::spawn(|| {
-///     uringy::block_on(async {});
-/// }).join().unwrap();
-/// ```
-pub fn block_on(future: impl Future<Output=()> + 'static) {
-    CONTEXT.with(|ctx| {
-        assert!(ctx.borrow().is_none());
+pub fn block_on<T: 'static>(future: impl Future<Output = T> + 'static) -> T {
+    if LOCAL_EVENT_LOOP.is_set() {
+        panic!("There's already an uringy::EventLoop running in this thread");
+    }
 
-        *ctx.borrow_mut() = Some(UnsafeCell::new(EventLoop::new()));
-
-        // Obtain multiple mutable references
-        let pointer = ctx.borrow().as_ref().unwrap().get();
-        let event_loop = unsafe { pointer.as_mut().unwrap() };
-
-        event_loop.spawn(future);
-        event_loop.run_to_completion();
-
-        *ctx.borrow_mut() = None;
-    });
+    let event_loop = EventLoop::new();
+    LOCAL_EVENT_LOOP.set(&event_loop, || event_loop.block_on(future))
 }
 
-/// ... uses thread local instance of event loop
-///
-/// This is safe since single threaded... and only run while polling futures
-///
-/// # Panics
-///
-/// Panics if called from **outside** of the uringy runtime.
-pub fn spawn(future: impl Future<Output=()> + 'static) {
-    CONTEXT.with(|ctx| {
-        assert!(ctx.borrow().is_some());
+/// Spawn an asynchronous task onto this thread's uringy runtime.
+pub fn spawn<T: 'static>(future: impl Future<Output = T> + 'static) -> async_task::Task<T> {
+    if !LOCAL_EVENT_LOOP.is_set() {
+        panic!("There's no uringy::EventLoop running in this thread");
+    }
 
-        // Obtain multiple mutable references
-        let pointer = ctx.borrow().as_ref().unwrap().get();
-        let event_loop = unsafe { pointer.as_mut().unwrap() };
-
-        event_loop.spawn(future);
-    });
+    LOCAL_EVENT_LOOP.with(|event_loop| event_loop.spawn(future))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn scoped_access_local_event() {
-        CONTEXT.with(|local_event_loop| {
-            assert!(local_event_loop.borrow().is_none());
-        });
+    mod block_on {
+        use super::*;
 
-        block_on(async {
-            CONTEXT.with(|local_event_loop| {
-                assert!(local_event_loop.borrow().is_some());
+        #[test]
+        fn return_expression() {
+            assert_eq!(block_on(async { 1 }), 1);
+        }
+
+        #[test]
+        fn await_future() {
+            block_on(async {
+                assert_eq!(async { 1 }.await, 1);
             });
-        });
+        }
 
-        CONTEXT.with(|local_event_loop| {
-            assert!(local_event_loop.borrow().is_none());
-        });
-    }
-
-    #[test]
-    #[should_panic]
-    fn nested_block_on() {
-        block_on(async {
-            block_on(async {});
-        });
-    }
-
-    #[test]
-    fn spawn_success() {
-        block_on(async {
-            println!("actually running");
+        #[test]
+        fn cross_thread_waker() {
             let (s, r) = async_channel::bounded(1);
 
-            spawn(async move {
-                s.send(1).await.unwrap();
-                s.send(2).await.unwrap();
+            std::thread::spawn(move || {
+                block_on(async move {
+                    s.send(1).await.unwrap();
+                });
             });
 
-            assert_eq!(Ok(1), r.recv().await);
-            assert_eq!(Ok(2), r.recv().await);
-        });
+            block_on(async move {
+                assert_eq!(r.recv().await, Ok(1));
+            });
+        }
+
+        #[test]
+        #[should_panic]
+        fn nested_block_on() {
+            block_on(async {
+                block_on(async {});
+            });
+        }
     }
 
-    #[test]
-    #[should_panic]
-    fn spawn_fail() {
-        spawn(async {});
-    }
-
-    #[test]
-    fn simple() {
-        block_on(async {
-            println!("HI");
-            let (s, r) = async_channel::bounded(1);
-            s.send(1).await.unwrap();
-            assert_eq!(Ok(1), r.recv().await);
-        });
-    }
+    // mod spawn {
+    //     use super::*;
+    //     use crate::sync::channel::unbounded::unbounded;
+    // 
+    //     // FIXME: thread panicked while panicking. aborting.
+    //     // TODO: replace async_channel with local_channel
+    //     #[test]
+    //     fn detached_task() {
+    //         block_on(async {
+    //             let (s, r) = unbounded();
+    // 
+    //             spawn(async move {
+    //                 s.send(1).unwrap();
+    //             })
+    //             .detach();
+    // 
+    //             assert_eq!(r.recv().await, Ok(1));
+    //         });
+    //     }
+    // 
+    //     #[test]
+    //     fn awaitable_task() {
+    //         block_on(async move {
+    //             let (s, r) = unbounded();
+    // 
+    //             s.send(1).unwrap();
+    // 
+    //             let task = spawn(async move { r.recv().await });
+    // 
+    //             assert_eq!(task.await, Ok(1));
+    //         });
+    //     }
+    // 
+    //     #[test]
+    //     #[should_panic]
+    //     fn without_runtime() {
+    //         spawn(async {}).detach();
+    //     }
+    // }
 }

@@ -1,85 +1,71 @@
-#![warn(missing_docs)]
+//! ...
 
+use async_task::Runnable;
+use concurrent_queue::ConcurrentQueue;
+use futures_lite::FutureExt;
 use std::future::Future;
-use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
-
-use slotmap::{DefaultKey, SlotMap};
 use waker_fn::waker_fn;
 
-// TODO: more descriptive error messages
-
 /// ...
+#[derive(Debug)]
 pub struct EventLoop {
-    // TODO: publish to and block on uring (generic)
-    ready_futures_tx: crossbeam_channel::Sender<DefaultKey>,
-    ready_futures_rx: crossbeam_channel::Receiver<DefaultKey>,
-    active_futures: SlotMap<DefaultKey, Pin<Box<dyn Future<Output=()>>>>,
+    ready_futures: Arc<ConcurrentQueue<Runnable>>,
 }
 
 impl EventLoop {
     /// ...
     pub fn new() -> Self {
-        let (tx, rx) = crossbeam_channel::unbounded();
         EventLoop {
-            ready_futures_tx: tx,
-            ready_futures_rx: rx,
-            active_futures: SlotMap::new(),
+            ready_futures: Arc::new(ConcurrentQueue::unbounded()),
         }
     }
 
     /// ...
-    pub fn spawn(&mut self, future: impl Future<Output=()> + 'static) { // FIXME: can I get away without 'static?
-        let pinned_future = Box::pin(future);
-        let key = self.active_futures.insert(pinned_future);
-        self.ready_futures_tx.send(key).unwrap();
+    pub fn block_on<T: 'static>(&self, future: impl Future<Output = T> + 'static) -> T {
+        let task = self.spawn(future); // FIXME: if I make this class' spawn require 'static, this will break!
+        self.run_to_completion(task)
+    }
+
+    /// Spawn an asynchronous task onto the event loop.
+    pub fn spawn<T: 'static>(
+        &self,
+        future: impl Future<Output = T> + 'static,
+    ) -> async_task::Task<T> {
+        let (runnable, task) = async_task::spawn_local(future, self.schedule());
+        runnable.schedule();
+        task
+    }
+
+    fn schedule(&self) -> impl Fn(Runnable) + Send + Sync + 'static {
+        let state = self.ready_futures.clone();
+
+        move |runnable| {
+            state.push(runnable).unwrap();
+        }
     }
 
     /// ...
-    pub fn run_to_completion(&mut self) {
-        while let Ok(key) = self.ready_futures_rx.recv() {
-            let future = &mut self.active_futures[key];
+    pub fn run_to_completion<T>(&self, mut task: async_task::Task<T>) -> T {
+        let noop_waker = waker_fn(|| {});
+        let mut context = Context::from_waker(&noop_waker);
 
-            let ready_futures_tx = self.ready_futures_tx.clone();
-            let waker = waker_fn(move || {
-                ready_futures_tx.send(key).unwrap();
-            });
+        loop {
+            // Poll pending tasks
+            while let Ok(runnable) = self.ready_futures.pop() {
+                runnable.run();
+            }
 
-            let context = &mut Context::from_waker(&waker);
-
-            if Pin::new(future).poll(context).is_ready() {
-                self.active_futures.remove(key).unwrap();
-
-                if self.active_futures.is_empty() {
-                    break;
-                }
+            // Check if original task is done before blocking
+            if let Poll::Ready(output) = task.poll(&mut context) {
+                return output;
             }
         }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn simple2() {
-        let (s, r) = async_channel::unbounded();
-
-        let mut event_loop = EventLoop::new();
-
-        event_loop.spawn(async move {
-            for n in 0..10 {
-                s.send(n).await.unwrap();
-            }
-        });
-
-        event_loop.spawn(async move {
-            while let Ok(n) = r.recv().await {
-                println!("it's {}", n);
-            }
-        });
-
-        event_loop.run_to_completion();
-    }
-}
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+// }

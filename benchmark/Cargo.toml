@@ -1,0 +1,29 @@
+[package]
+name = "benchmark"
+version = "0.1.0"
+edition = "2021"
+
+# https://bit.ly/3kyGsmw
+[lib]
+bench = false
+
+[[bench]]
+name = "block_on"
+harness = false
+
+[[bench]]
+name = "notify"
+harness = false
+
+[[bench]]
+name = "notify_iai"
+harness = false
+
+[dev-dependencies]
+# Runtimes
+uringy = { path = ".." }
+tokio = { version = "1.13.0", features = ["full"] }
+
+# Benchmark tools
+criterion = { version = "0.3.5", features = ["html_reports"] }
+iai = "0.1"
