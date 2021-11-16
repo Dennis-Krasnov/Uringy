@@ -1,0 +1,79 @@
+name: Manual Deployment
+
+on:
+  push:
+    branches: [ master ]
+
+jobs:
+#  unit_test:
+#    runs-on: ubuntu-latest
+#    steps:
+#      - name: Checkout repository
+#        uses: actions/checkout@v2
+#
+#      - name: Cache Cargo
+#        uses: actions/cache@v2
+#        with:
+#          path: |
+#            ~/.cargo/bin/
+#            ~/.cargo/registry/index/
+#            ~/.cargo/registry/cache/
+#            ~/.cargo/git/db/
+#            target/
+#          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+#
+#      - name: Unit test
+#        run: cargo test --workspace
+#
+#  benchmark:
+#    runs-on: ubuntu-latest
+#    steps:
+#      - name: Checkout repository
+#        uses: actions/checkout@v2
+#
+#      - name: Cache Cargo
+#        uses: actions/cache@v2
+#        with:
+#          path: |
+#            ~/.cargo/bin/
+#            ~/.cargo/registry/index/
+#            ~/.cargo/registry/cache/
+#            ~/.cargo/git/db/
+#            target/
+#          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+#
+#      - name: Benchmark
+#        run: cargo bench
+#        working-directory: ./benchmark
+#
+#  build:
+#    runs-on: ubuntu-latest
+#    steps:
+#      - name: Checkout repository
+#        uses: actions/checkout@v2
+#
+#      - name: Cache Cargo
+#        uses: actions/cache@v2
+#        with:
+#          path: |
+#            ~/.cargo/bin/
+#            ~/.cargo/registry/index/
+#            ~/.cargo/registry/cache/
+#            ~/.cargo/git/db/
+#            target/
+#          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+#
+#      - name: Compile rust
+#        run: cargo build --workspace
+
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Login to crates.io
+        run: cargo login ${{ secrets.CRATES_IO_ACCESS_TOKEN }}
+
+      - name: Publish to crates.io
+        run: cargo publish

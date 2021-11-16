@@ -1,6 +1,13 @@
 [package]
 name = "uringy"
 version = "0.1.0"
+documentation = "https://github.com/Dennis-Krasnov/Uringy"
+repository = "https://github.com/Dennis-Krasnov/Uringy"
+homepage = "https://github.com/Dennis-Krasnov/Uringy"
+description = "Single-threaded async runtime based on io_uring."
+categories = ["asynchronous", "concurrency", "filesystem", "os", "network-programming"]
+keywords = ["io", "async", "non-blocking", "futures", "io_uring"]
+license = "MIT"
 authors = ["Dennis Krasnov <dennis@krasnov.dev>"]
 edition = "2021"
 
