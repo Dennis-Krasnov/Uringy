@@ -31,6 +31,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v2
 
+      - name: Install Valgrind
+        run: sudo apt install -y valgrind
+
       - name: Cache Cargo
         uses: actions/cache@v2
         with:

@@ -28,7 +28,7 @@ impl Notifier {
     }
 
     /// ...
-    fn notify(self) {
+    pub fn notify(self) {
         let mut notify = self.notify.borrow_mut();
 
         notify.has_been_notified = true;
