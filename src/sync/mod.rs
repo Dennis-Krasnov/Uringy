@@ -1,4 +1,3 @@
 //! ...
 
-mod notify;
-pub use notify::Notify;
+pub mod notify;

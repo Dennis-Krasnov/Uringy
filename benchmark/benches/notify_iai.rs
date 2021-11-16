@@ -1,7 +1,7 @@
 use iai::{black_box, main};
 
 fn uringy_create_notify() {
-    black_box(uringy::sync::Notify::new());
+    black_box(uringy::sync::notify::notify());
 }
 
 fn tokio_create_notify() {

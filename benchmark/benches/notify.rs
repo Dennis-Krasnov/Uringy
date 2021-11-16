@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 fn uringy_create_notify() {
-    black_box(uringy::sync::Notify::new());
+    black_box(uringy::sync::notify::notify());
 }
 
 pub fn tokio_create_notify() {
