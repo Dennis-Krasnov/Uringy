@@ -1,0 +1,21 @@
+name: Deploy to crates.io
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'version field in Cargo.toml'
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Login to crates.io
+        run: cargo login ${{ secrets.CRATES_IO_ACCESS_TOKEN }}
+
+      - name: Publish to crates.io
+        run: cargo publish
