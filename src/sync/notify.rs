@@ -1,6 +1,6 @@
 //! ...
 
-use std::cell::RefCell;
+use std::cell::UnsafeCell;
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -8,28 +8,28 @@ use std::task::{Context, Poll, Waker};
 
 /// ...
 pub fn notify() -> (Notifier, Waiter) {
-    let notify = Rc::new(RefCell::new(Notify::new()));
+    let notify = Rc::new(UnsafeCell::new(Notify::new()));
 
     let notifier = Notifier::new(notify.clone());
-    let waiter = Waiter::new(notify.clone());
+    let waiter = Waiter::new(notify);
 
     (notifier, waiter)
 }
 
 /// ...
 pub struct Notifier {
-    notify: Rc<RefCell<Notify>>,
+    notify: Rc<UnsafeCell<Notify>>,
 }
 
 impl Notifier {
     /// ...
-    fn new(notify: Rc<RefCell<Notify>>) -> Self {
+    fn new(notify: Rc<UnsafeCell<Notify>>) -> Self {
         Notifier { notify }
     }
 
     /// ...
     pub fn notify(self) {
-        let mut notify = self.notify.borrow_mut();
+        let mut notify = unsafe { self.notify.get().as_mut().unwrap() };
 
         notify.has_been_notified = true;
 
@@ -41,12 +41,12 @@ impl Notifier {
 
 /// ...
 pub struct Waiter {
-    notify: Rc<RefCell<Notify>>,
+    notify: Rc<UnsafeCell<Notify>>,
 }
 
 impl Waiter {
     /// ...
-    fn new(notify: Rc<RefCell<Notify>>) -> Self {
+    fn new(notify: Rc<UnsafeCell<Notify>>) -> Self {
         Waiter { notify }
     }
 }
@@ -55,7 +55,7 @@ impl Future for Waiter {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut notify = self.notify.borrow_mut();
+        let mut notify = unsafe { self.notify.get().as_mut().unwrap() };
 
         if notify.has_been_notified {
             return Poll::Ready(());
@@ -92,6 +92,11 @@ mod tests {
     use super::*;
     use crate::*;
 
+    #[test]
+    fn temp() {
+        
+    }
+    
     #[test]
     fn notify_then_wait() {
         block_on(async {
