@@ -1,7 +1,7 @@
 [package]
 name = "uringy"
 version = "0.1.2"
-documentation = "https://github.com/Dennis-Krasnov/Uringy"
+documentation = "https://docs.rs/uringy"
 repository = "https://github.com/Dennis-Krasnov/Uringy"
 homepage = "https://github.com/Dennis-Krasnov/Uringy"
 description = "Single-threaded async runtime based on io_uring."
