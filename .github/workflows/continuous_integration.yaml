@@ -23,7 +23,7 @@ jobs:
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Unit test
-        run: cargo test --workspace
+        run: cargo test
 
   benchmark:
     runs-on: ubuntu-latest
@@ -67,4 +67,4 @@ jobs:
           key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Compile rust
-        run: cargo build --workspace
+        run: cargo build
