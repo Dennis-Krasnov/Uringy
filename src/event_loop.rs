@@ -84,7 +84,10 @@ impl EventLoop {
                 *notify = Notify::Waiting(Some(waker.clone()));
                 false
             }
-            Notify::Notified => true,
+            Notify::Notified => {
+                self.pending_notifies.remove(key);
+                true
+            }
             Notify::Waiting(_) => {
                 unreachable!();
             }

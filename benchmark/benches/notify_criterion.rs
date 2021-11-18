@@ -60,6 +60,26 @@ pub fn bench_wait_after_notify(c: &mut Criterion) {
     group.finish();
 }
 
+// hypothesis: not allocating each time may be beneficial for uringy version
+pub fn bench_many_wait_after_notify(c: &mut Criterion) {
+    let mut group = c.benchmark_group("notify/wait_after_notify");
+    group.bench_function("uringy", |b| {
+        b.to_async(UringyExecutor).iter(|| async {
+            for _ in 0..1_000_000 {
+                wait_after_notify_uringy()
+            }
+        })
+    });
+    group.bench_function("tokio", |b| {
+        b.iter(|| {
+            for _ in 0..1_000_000 {
+                wait_after_notify_tokio()
+            }
+        })
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_create_destroy,
@@ -67,5 +87,6 @@ criterion_group!(
     bench_notify_after_wait,
     bench_wait_before_notify,
     bench_wait_after_notify,
+    bench_many_wait_after_notify,
 );
 criterion_main!(benches);
