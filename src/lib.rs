@@ -4,32 +4,51 @@
 
 use std::future::Future;
 
-use scoped_tls::scoped_thread_local;
+use std::cell::UnsafeCell;
 
 use crate::event_loop::EventLoop;
 
 mod event_loop;
 pub mod sync;
 
-scoped_thread_local!(static LOCAL_EVENT_LOOP: EventLoop);
-
 /// ...
 pub fn block_on<T: 'static>(future: impl Future<Output = T> + 'static) -> T {
-    if LOCAL_EVENT_LOOP.is_set() {
-        panic!("There's already an uringy::EventLoop running in this thread");
+    if local_runtime().is_some() {
+        panic!("Nested block_on is forbidden, consider spawning the task instead.");
     }
 
-    let event_loop = EventLoop::new();
-    LOCAL_EVENT_LOOP.set(&event_loop, || event_loop.block_on(future))
+    create_local_runtime(EventLoop::new());
+
+    local_runtime().unwrap().block_on(future)
 }
 
 /// Spawn an asynchronous task onto this thread's uringy runtime.
 pub fn spawn<T: 'static>(future: impl Future<Output = T> + 'static) -> async_task::Task<T> {
-    if !LOCAL_EVENT_LOOP.is_set() {
-        panic!("There's no uringy::EventLoop running in this thread");
-    }
+    local_runtime()
+        .expect("There's no uringy runtime to spawn the task on, consider blocking on the task instead.")
+        .spawn(future)
+}
 
-    LOCAL_EVENT_LOOP.with(|event_loop| event_loop.spawn(future))
+thread_local! {
+    /// ...
+    pub(crate) static LOCAL_RUNTIME: UnsafeCell<Option<EventLoop>> = UnsafeCell::new(None);
+}
+
+/// ...
+pub(crate) fn local_runtime() -> Option<&'static mut EventLoop> {
+    LOCAL_RUNTIME.with(|runtime| {
+        let runtime = unsafe { runtime.get().as_mut().unwrap() };
+        runtime.as_mut()
+    })
+}
+
+/// ...
+fn create_local_runtime(event_loop: EventLoop) {
+    // TODO: rename parameter
+    LOCAL_RUNTIME.with(|runtime| {
+        let runtime = unsafe { runtime.get().as_mut().unwrap() };
+        *runtime = Some(event_loop);
+    });
 }
 
 #[cfg(test)]
@@ -67,7 +86,9 @@ mod tests {
         }
 
         #[test]
-        #[should_panic]
+        #[should_panic(
+            expected = "Nested block_on is forbidden, consider spawning the task instead."
+        )]
         fn nested_block_on() {
             block_on(async {
                 block_on(async {});
@@ -75,43 +96,43 @@ mod tests {
         }
     }
 
-    // mod spawn {
-    //     use super::*;
-    //     use crate::sync::channel::unbounded::unbounded;
-    // 
-    //     // FIXME: thread panicked while panicking. aborting.
-    //     // TODO: replace async_channel with local_channel
-    //     #[test]
-    //     fn detached_task() {
-    //         block_on(async {
-    //             let (s, r) = unbounded();
-    // 
-    //             spawn(async move {
-    //                 s.send(1).unwrap();
-    //             })
-    //             .detach();
-    // 
-    //             assert_eq!(r.recv().await, Ok(1));
-    //         });
-    //     }
-    // 
-    //     #[test]
-    //     fn awaitable_task() {
-    //         block_on(async move {
-    //             let (s, r) = unbounded();
-    // 
-    //             s.send(1).unwrap();
-    // 
-    //             let task = spawn(async move { r.recv().await });
-    // 
-    //             assert_eq!(task.await, Ok(1));
-    //         });
-    //     }
-    // 
-    //     #[test]
-    //     #[should_panic]
-    //     fn without_runtime() {
-    //         spawn(async {}).detach();
-    //     }
-    // }
+    mod spawn {
+        use super::*;
+        // use crate::sync::channel::unbounded::unbounded;
+        //
+        // #[test]
+        // fn detached_task() {
+        //     block_on(async {
+        //         let (s, r) = unbounded();
+        //
+        //         spawn(async move {
+        //             s.send(1).unwrap();
+        //         })
+        //         .detach();
+        //
+        //         assert_eq!(r.recv().await, Ok(1));
+        //     });
+        // }
+        //
+        // #[test]
+        // fn awaitable_task() {
+        //     block_on(async move {
+        //         let (s, r) = unbounded();
+        //
+        //         s.send(1).unwrap();
+        //
+        //         let task = spawn(async move { r.recv().await });
+        //
+        //         assert_eq!(task.await, Ok(1));
+        //     });
+        // }
+
+        #[test]
+        #[should_panic(
+            expected = "There's no uringy runtime to spawn the task on, consider blocking on the task instead."
+        )]
+        fn without_runtime() {
+            spawn(async {}).detach();
+        }
+    }
 }
