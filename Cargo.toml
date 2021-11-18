@@ -25,5 +25,7 @@ async-task = "4.0.3"
 libc = "0.2.103"
 futures-lite = "1.12.0"
 
+slotmap = "1.0.6"
+
 [dev-dependencies]
 async-channel = "1.6.1"

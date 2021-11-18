@@ -6,20 +6,23 @@ use std::future::Future;
 
 use std::cell::UnsafeCell;
 
-use crate::event_loop::EventLoop;
+use crate::event_loop::{EventLoop, Notifier, Waiter};
 
-mod event_loop;
-pub mod sync;
+pub mod event_loop;
 
 /// ...
-pub fn block_on<T: 'static>(future: impl Future<Output = T> + 'static) -> T {
+pub fn block_on<T>(future: impl Future<Output = T>) -> T {
     if local_runtime().is_some() {
         panic!("Nested block_on is forbidden, consider spawning the task instead.");
     }
 
-    create_local_runtime(EventLoop::new());
+    set_local_runtime(Some(EventLoop::new()));
 
-    local_runtime().unwrap().block_on(future)
+    let result = local_runtime().unwrap().block_on(future);
+
+    set_local_runtime(None);
+
+    result
 }
 
 /// Spawn an asynchronous task onto this thread's uringy runtime.
@@ -27,6 +30,11 @@ pub fn spawn<T: 'static>(future: impl Future<Output = T> + 'static) -> async_tas
     local_runtime()
         .expect("There's no uringy runtime to spawn the task on, consider blocking on the task instead.")
         .spawn(future)
+}
+
+/// ...
+pub fn notify() -> (Notifier, Waiter) {
+    local_runtime().expect("...").generate_notify()
 }
 
 thread_local! {
@@ -43,11 +51,11 @@ pub(crate) fn local_runtime() -> Option<&'static mut EventLoop> {
 }
 
 /// ...
-fn create_local_runtime(event_loop: EventLoop) {
+fn set_local_runtime(event_loop: Option<EventLoop>) {
     // TODO: rename parameter
     LOCAL_RUNTIME.with(|runtime| {
         let runtime = unsafe { runtime.get().as_mut().unwrap() };
-        *runtime = Some(event_loop);
+        *runtime = event_loop;
     });
 }
 
@@ -57,6 +65,12 @@ mod tests {
 
     mod block_on {
         use super::*;
+
+        #[test]
+        fn consecutive_block_on() {
+            block_on(async {});
+            block_on(async {});
+        }
 
         #[test]
         fn return_expression() {
