@@ -46,7 +46,7 @@ jobs:
           key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Benchmark
-        run: cargo bench --features enable_iai
+        run: cargo bench --bench "*_iai"
         working-directory: ./benchmark
 
   build:

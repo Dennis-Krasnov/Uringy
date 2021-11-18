@@ -1,6 +1,3 @@
-#![allow(unused_imports)]
-#![allow(dead_code)]
-
 use benchmark::notify::*;
 use criterion::{criterion_group, criterion_main, Criterion};
 
@@ -47,9 +44,4 @@ criterion_group!(
     bench_wait_before_notify,
     bench_wait_after_notify,
 );
-
-#[cfg(feature = "enable_criterion")]
 criterion_main!(benches);
-
-#[cfg(not(feature = "enable_criterion"))]
-fn main() {}

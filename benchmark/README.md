@@ -13,23 +13,23 @@ sudo sh -c "echo off > /sys/devices/system/cpu/smt/control"
 
 # Make sure there's FREE memory
 # Don't do anything else on the system
-taskset --cpu-list 15 cargo bench --features enable_criterion -- --warm-up-time 1 --output-format bencher
+taskset --cpu-list 15 cargo bench --bench notify_criterion -- --warm-up-time 1 --output-format bencher
 
 sudo sh -c "echo on > /sys/devices/system/cpu/smt/control"
 sudo sh -c "echo 1 > /sys/devices/system/cpu/cpufreq/boost"
 sudo cpupower frequency-set --governor schedutil
 ```
 
-https://bheisler.github.io/criterion.rs/book/user_guide/command_line_options.html#baselines
+[baselines](https://bheisler.github.io/criterion.rs/book/user_guide/command_line_options.html#baselines)
 
 ```shell
 # git checkout or local history
-taskset --cpu-list 15 cargo bench --features enable_criterion -- --warm-up-time 1 --save-baseline VERSION1
+taskset --cpu-list 15 cargo bench --bench notify_criterion -- --warm-up-time 1 --save-baseline VERSION1
 # git checkout or local history
-taskset --cpu-list 15 cargo bench --features enable_criterion -- --warm-up-time 1 --save-baseline VERSION2
+taskset --cpu-list 15 cargo bench --bench notify_criterion -- --warm-up-time 1 --save-baseline VERSION2
 
 # compare:
-cargo bench --features enable_criterion -- --verbose --load-baseline VERSION1 --baseline VERSION2
+cargo bench --bench notify_criterion -- --verbose --load-baseline VERSION1 --baseline VERSION2
 ```
 
 ## Perf stat Benchmark
@@ -51,13 +51,14 @@ sudo cpupower frequency-set --governor schedutil
 
 ## iai Benchmark
 ```shell
-cargo bench --features enable_iai
+cargo bench --bench notify_iai
 ```
 
 ## Debugging
 ```shell
 lscpu
 cat /sys/devices/system/cpu/smt/active
+cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
 ```
 
 ## TODO: Prioritizing process

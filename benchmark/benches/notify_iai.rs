@@ -1,6 +1,3 @@
-#![allow(unused_imports)]
-#![allow(dead_code)]
-
 use benchmark::notify::*;
 use iai::{black_box, main};
 
@@ -44,7 +41,6 @@ fn bench_wait_after_notify_tokio() {
     black_box(wait_after_notify_tokio());
 }
 
-#[cfg(feature = "enable_iai")]
 main!(
     bench_create_destroy_uringy,
     bench_create_destroy_tokio,
@@ -57,6 +53,3 @@ main!(
     bench_wait_after_notify_uringy,
     bench_wait_after_notify_tokio,
 );
-
-#[cfg(not(feature = "enable_iai"))]
-fn main() {}

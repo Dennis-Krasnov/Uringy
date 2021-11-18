@@ -15,10 +15,6 @@ harness = false
 name = "notify_iai"
 harness = false
 
-[features]
-enable_criterion = []
-enable_iai = []
-
 [dependencies]
 uringy = { path = ".." }
 tokio = { version = "1.13.0", features = ["sync"] }
