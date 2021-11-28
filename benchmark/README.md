@@ -51,7 +51,7 @@ sudo cpupower frequency-set --governor schedutil
 
 ## iai Benchmark
 ```shell
-cargo bench --bench notify_iai
+cargo bench --bench event_loop_iai
 ```
 
 ## Debugging

@@ -12,14 +12,17 @@ name = "notify_criterion"
 harness = false
 
 [[bench]]
-name = "notify_iai"
+name = "event_loop_iai"
 harness = false
 
-[dependencies]
+[dev-dependencies]
+# Runtimes
 uringy = { path = ".." }
 tokio = { version = "1.13.0", features = ["sync"] }
-noop-waker = "0.1.0"
 
-[dev-dependencies]
+# Benchmarking tools
 criterion = { version = "0.3.5", features = ["html_reports", "async_futures"] }
 iai = "0.1"
+
+# Misc
+rand = "0.8.4"
