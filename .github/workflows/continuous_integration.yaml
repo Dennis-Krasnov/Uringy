@@ -58,7 +58,7 @@ jobs:
       - name: Download Cargo dependencies
         run: cargo fetch
 
-      - name: Cold compile Rust
+      - name: Time cold build
         run: cargo build --release --timings
 
       - name: Upload timings report
