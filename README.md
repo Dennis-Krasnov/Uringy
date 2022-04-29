@@ -32,13 +32,9 @@ Note that Uringy is a work in progress and shouldn't be used in production.
 - Avoid copying buffers to and from the kernel
 - Avoid using a thread pool for file system IO
 
-TODO: benchmark comparison summary + link
-
 #### Quick to compile
 - Only compile what you need by specifying Cargo features (TODO: link to section)
 - Minimal dependencies and use of macros
-
-TODO: benchmark comparison summary + link
 
 ## Quick Start
 
