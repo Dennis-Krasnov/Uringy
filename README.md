@@ -82,7 +82,7 @@ Once you've decided on using async Rust, you should understand the [basics of fu
 
 Then you should decide which async Runtime you want to use.
 For a serious project you should use [Tokio](https://github.com/tokio-rs/tokio).
-But since you're here, run the [quick start](#Quick Start) and then check out the [examples](examples).
+But since you're here, run the quick start and then check out the [examples](examples).
 
 If you need to implement your own [Future](https://doc.rust-lang.org/std/future/trait.Future.html) types, check out the [source code](src/sync) for examples.
 I highly recommend [Rust for Rustaceans](https://rust-for-rustaceans.com/) to learn the theory.
