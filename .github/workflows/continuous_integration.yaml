@@ -66,3 +66,15 @@ jobs:
         with:
           name: build_timings_report
           path: target/cargo-timings/cargo-timing.html
+
+  verify_msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Install cargo-msrv
+        run: cargo install cargo-msrv --no-default-features
+
+      - name: Verify valid MSRV
+        run: cargo msrv verify

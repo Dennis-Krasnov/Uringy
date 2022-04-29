@@ -87,6 +87,10 @@ But since you're here, run the quick start and then check out the [examples](exa
 If you need to implement your own [Future](https://doc.rust-lang.org/std/future/trait.Future.html) types, check out the [source code](src/sync) for examples.
 I highly recommend [Rust for Rustaceans](https://rust-for-rustaceans.com/) to learn the theory.
 
+## Supported Rust Versions
+
+The current MSRV is 1.58.1.
+
 ## License
 
 This project is licensed under the [MIT license](LICENSE).

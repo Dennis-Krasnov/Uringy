@@ -10,6 +10,7 @@ keywords = ["io", "async", "non-blocking", "futures", "io_uring"]
 license = "MIT"
 authors = ["Dennis Krasnov <dennis@krasnov.dev>"]
 edition = "2021"
+rust-version = "1.58.1"
 
 [workspace]
 members = [
