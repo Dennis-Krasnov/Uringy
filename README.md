@@ -48,7 +48,7 @@ Add uringy as a dependency to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-uringy = "0.1.2"
+uringy = "0.2.0"
 ```
 
 Then replace `src/main.rs` with:
