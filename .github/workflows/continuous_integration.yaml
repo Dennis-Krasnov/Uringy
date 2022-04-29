@@ -55,6 +55,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v2
 
+      - name: Cache Cargo index
+        uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cargo/registry/index/
+          key: ${{ runner.os }}-cargo-build-timings-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Download Cargo dependencies
         run: cargo fetch
 
