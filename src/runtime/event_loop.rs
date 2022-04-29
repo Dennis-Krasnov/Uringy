@@ -78,8 +78,8 @@ impl EventLoop {
         // Boilerplate for polling the original task's output
         let mut future_output = spawn(future);
 
-        let noop_waker = waker_fn::waker_fn(|| {});
-        let mut context = Context::from_waker(&noop_waker);
+        let waker = noop_waker::noop_waker();
+        let mut context = Context::from_waker(&waker);
 
         let mut poll_future_output = || {
             // Pin to stack // TODO: safety explanation

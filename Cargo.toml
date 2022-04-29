@@ -26,7 +26,7 @@ time = []
 
 [dependencies]
 # TODO: loosen dependencies
-waker-fn = "=1.1.0" # TODO: just use noop waker?
+noop-waker = "=0.1.0"
 slab = "0.4.6"
 libc = "=0.2.124"
 io-uring = "=0.5.2"
@@ -35,5 +35,4 @@ async-channel = "1.6.1"
 
 [dev-dependencies]
 async-channel = "=1.6.1"
-noop-waker = "=0.1.0"
 impls = "1.0.3"
