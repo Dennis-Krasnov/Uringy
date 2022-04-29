@@ -73,8 +73,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v2
 
+      - name: Cache Cargo
+        uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Install cargo-msrv
         run: cargo install cargo-msrv --no-default-features
 
-      - name: Verify valid MSRV
+      - name: Verify whether MSRV is satisfiable
         run: cargo msrv verify
