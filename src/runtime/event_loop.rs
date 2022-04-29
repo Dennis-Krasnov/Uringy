@@ -2,8 +2,7 @@
 
 use crate::runtime::task;
 use async_channel::Sender;
-use slotmap::Key;
-use slotmap::{DefaultKey, KeyData, SlotMap};
+use slab::Slab;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt::Debug;
@@ -37,7 +36,7 @@ struct EventLoop {
     io_uring: io_uring::IoUring,
 
     /// Links in-flight syscalls to their awaiting tasks.
-    syscall_results: RefCell<SlotMap<DefaultKey, Sender<io::Result<u32>>>>,
+    syscall_results: RefCell<Slab<Sender<io::Result<u32>>>>,
 
     /// The last time the submission queue was submitted to the kernel.
     ///
@@ -60,8 +59,8 @@ impl EventLoop {
     /// Creates a new instance of the Uringy runtime.
     fn new(config: &Config) -> std::io::Result<Self> {
         Ok(EventLoop {
-            io_uring: io_uring::IoUring::new(config.sq_size)?, // TODO: new_with_flags, on separate line (above return)
-            syscall_results: RefCell::new(SlotMap::new()),
+            io_uring: io_uring::IoUring::new(config.sq_size as u32)?, // TODO: new_with_flags, on separate line (above return)
+            syscall_results: RefCell::new(Slab::with_capacity(config.max_inflight_syscalls)),
             last_submit: RefCell::new(Instant::now()),
             ready_tasks: RefCell::new(VecDeque::with_capacity(1024)),
             _runtime_id: ID_GENERATOR.fetch_add(1, Ordering::SeqCst),
@@ -98,8 +97,10 @@ impl EventLoop {
                     std::io::Result::Err(std::io::Error::from_raw_os_error(-cqe.result()))
                 };
 
-                let key = DefaultKey::from(KeyData::from_ffi(cqe.user_data()));
-                let sender = self.syscall_results.borrow_mut().remove(key).unwrap(); // TODO: expect
+                let sender = self
+                    .syscall_results
+                    .borrow_mut()
+                    .remove(cqe.user_data() as usize);
                 sender.try_send(result).unwrap(); // TODO: expect // triggers schedule, which mutates ready tasks
             }
         };
@@ -242,7 +243,7 @@ pub(crate) async fn syscall(entry: io_uring::squeue::Entry) -> std::io::Result<u
 
                 // Safety: TODO: explain
                 unsafe {
-                    sq.push(&entry.user_data(key.data().as_ffi())).unwrap();
+                    sq.push(&entry.user_data(key as u64)).unwrap();
                 }
             }
             None => panic!("WARNING: TCP SEND CALLED BUT EVENT LOOP DOESN'T EXIST!!!"),
@@ -262,11 +263,11 @@ pub(crate) async fn syscall(entry: io_uring::squeue::Entry) -> std::io::Result<u
 pub struct Config {
     /// According to iou: The number of entries must be in the range of 1..4096 (inclusive) and it's recommended to be a power of two.
     /// Submission queue.
-    sq_size: u32,
+    sq_size: usize,
 
     /// ...
     /// System calls.
-    _max_inflight_syscalls: u32,
+    max_inflight_syscalls: usize,
 
     /// ...
     /// Submission queue entry.
@@ -277,7 +278,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             sq_size: 4096,
-            _max_inflight_syscalls: 4096, // TODO: pick and document sensible default. (a multiple bigger than sq_size)
+            max_inflight_syscalls: 4096, // TODO: pick and document sensible default. (a multiple bigger than sq_size)
             sqe_max_linger: Duration::from_millis(1),
         }
     }
