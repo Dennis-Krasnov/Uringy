@@ -85,7 +85,7 @@ jobs:
           key: ${{ runner.os }}-cargo-verify-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install cargo-msrv
-        run: cargo install cargo-msrv --no-default-features
+        run: cargo install cargo-msrv --force --no-default-features
 
       - name: Verify whether MSRV is satisfiable
         run: cargo msrv verify
