@@ -4,7 +4,7 @@ version = "0.1.2"
 documentation = "https://docs.rs/uringy"
 repository = "https://github.com/Dennis-Krasnov/Uringy"
 homepage = "https://github.com/Dennis-Krasnov/Uringy"
-description = "Single-threaded async runtime based on io_uring."
+description = "A simple single-threaded async runtime for Rust based on io_uring."
 categories = ["asynchronous", "concurrency", "filesystem", "os", "network-programming"]
 keywords = ["io", "async", "non-blocking", "futures", "io_uring"]
 license = "MIT"
@@ -16,16 +16,22 @@ members = [
     "benchmark",
 ]
 
+[features]
+default = ["fs", "time"]
+fs = []
+quic = [] # TODO: pulls in quiche dependency
+process = []
+time = []
+
 [dependencies]
-concurrent-queue = "1.2.2"
+# TODO: loosen dependencies
+waker-fn = "=1.1.0"
+slotmap = "=1.0.6" # TODO: replace with slab
+libc = "=0.2.124"
+io-uring = "=0.5.2"
 
-waker-fn = "1.1.0"
-async-task = "4.0.3"
-
-libc = "0.2.103"
-futures-lite = "1.12.0"
-
-slotmap = "1.0.6"
+async-channel = "1.6.1"
 
 [dev-dependencies]
-async-channel = "1.6.1"
+async-channel = "=1.6.1"
+noop-waker = "=0.1.0"
