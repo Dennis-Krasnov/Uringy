@@ -73,6 +73,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v2
 
+      - name: Cache Cargo
+        uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-verify-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Install cargo-msrv
         run: |
           wget https://github.com/foresterre/cargo-msrv/releases/download/v0.15.1/cargo-msrv_v0.15.1_Linux_x86_64.tar
