@@ -49,22 +49,17 @@ jobs:
 #        run: cargo bench --bench "*_iai"
 #        working-directory: ./benchmark
 
-  build:
+  build_timings:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v2
 
-      - name: Cache Cargo
-        uses: actions/cache@v2
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cold compile rust
+        run: cargo build --release --timings
 
-      - name: Compile rust
-        run: cargo build
+      - name: Upload timings report
+        uses: actions/upload-artifact@v3
+        with:
+          name: timings_report
+          path: target/cargo-timings/cargo-timing.html
