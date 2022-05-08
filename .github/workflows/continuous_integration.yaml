@@ -98,3 +98,20 @@ jobs:
 
       - name: Verify whether MSRV is satisfiable
         run: ./cargo-msrv verify
+
+  verify_no_unused_dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Switch to nightly Rust
+        run: rustup default nightly
+
+      - name: Install cargo-udeps
+        run: |
+          wget https://github.com/est31/cargo-udeps/releases/download/v0.1.27/cargo-udeps-v0.1.27-x86_64-unknown-linux-gnu.tar.gz
+          tar -xvf cargo-udeps-v0.1.27-x86_64-unknown-linux-gnu.tar.gz
+
+      - name: Verify there's no unused dependencies
+        run: ./cargo-udeps-v0.1.27-x86_64-unknown-linux-gnu/cargo-udeps udeps
