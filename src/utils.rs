@@ -1,5 +1,23 @@
 use std::ops::{Bound, Range, RangeBounds};
 
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+/// ...
+pub fn poll<T>(future: &mut impl Future<Output = T>) -> Poll<T> {
+    // Boilerplate for polling futures
+    let waker = noop_waker::noop_waker();
+    let mut context = Context::from_waker(&waker);
+
+    // Pin to stack
+    let future = unsafe { Pin::new_unchecked(future) };
+
+    future.poll(&mut context)
+}
+
+// TODO: test ^^^
+
 /// Standardizes an arbitrary range bound into a range (a..b).
 ///
 /// # Panics
