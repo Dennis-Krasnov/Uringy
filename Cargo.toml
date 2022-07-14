@@ -29,9 +29,7 @@ time = []
 noop-waker = "=0.1.0"
 slab = "0.4.6"
 libc = "=0.2.124"
-io-uring = "=0.5.2"
-
-async-channel = "1.6.1"
+io-uring = { git = "https://github.com/Dennis-Krasnov/io-uring" }
 
 [dev-dependencies]
 async-channel = "=1.6.1"
