@@ -11,16 +11,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v2
 
-      - name: Cache Cargo
-        uses: actions/cache@v2
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@cb2cf0cc7c5198d3364b9630e2c3d457f160790c # v1.4
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          key: unit-test
 
       - name: Unit test
         run: cargo test
@@ -55,12 +49,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v2
 
-      - name: Cache Cargo index
-        uses: actions/cache@v2
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@cb2cf0cc7c5198d3364b9630e2c3d457f160790c # v1.4
         with:
-          path: |
-            ~/.cargo/registry/index/
-          key: ${{ runner.os }}-cargo-build-timings-${{ hashFiles('**/Cargo.lock') }}
+          key: unit-timings
 
       - name: Download Cargo dependencies
         run: cargo fetch
@@ -80,16 +72,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v2
 
-      - name: Cache Cargo
-        uses: actions/cache@v2
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@cb2cf0cc7c5198d3364b9630e2c3d457f160790c # v1.4
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-verify-msrv-${{ hashFiles('**/Cargo.lock') }}
+          key: verify-msrv
 
       - name: Install cargo-msrv
         run: |
@@ -108,16 +94,10 @@ jobs:
       - name: Switch to nightly Rust
         run: rustup default nightly
 
-      - name: Cache Cargo
-        uses: actions/cache@v2
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@cb2cf0cc7c5198d3364b9630e2c3d457f160790c # v1.4
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-verify-unused-deps-${{ hashFiles('**/Cargo.lock') }}
+          key: verify-no-unused-dependencies
 
       - name: Install cargo-udeps
         run: |
