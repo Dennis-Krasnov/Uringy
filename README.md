@@ -40,15 +40,9 @@ Note that Uringy is a work in progress and shouldn't be used in production.
 
 [Install Rust](https://www.rust-lang.org/tools/install) and [create a new cargo project](https://doc.rust-lang.org/book/ch01-03-hello-cargo.html).
 
-Add uringy as a dependency to your `Cargo.toml`:
-
-```toml
-[dependencies]
-uringy = "0.3.0"
-```
+Add uringy as a dependency: `cargo add uringy`
 
 Then replace `src/main.rs` with:
-
 ```rust
 use uringy::runtime;
 
@@ -68,7 +62,7 @@ fn main() {
 
 And run your project using: `cargo run --release`
 
-If you're using macOS or Windows, run a Linux virtual machine or a docker container.
+If you're using macOS or Windows, use a Linux virtual machine or a docker container.
 
 ## New to async Rust?
 You might not need async Rust, using [synchronous threads](https://doc.rust-lang.org/book/ch16-00-concurrency.html) will get you pretty far.
@@ -85,7 +79,11 @@ I highly recommend [Rust for Rustaceans](https://rust-for-rustaceans.com/) to le
 
 ## Supported Rust Versions
 
-The current MSRV is 1.58.1.
+The MSRV is 1.58.1 (released in January 2022).
+
+## Supported Linux Kernel Versions
+
+The minimum kernel version is 5.18 (released in May 2022).
 
 ## License
 
