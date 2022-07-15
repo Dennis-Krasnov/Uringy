@@ -33,7 +33,6 @@
 //!     println!("received notification");                 // 6
 //! });
 //! ```
-//! <img src="https://raw.githubusercontent.com/Dennis-Krasnov/Uringy/master/diagrams/oneshot_notify/await_before_notify_v1.png" style="width: 100%; max-width: 600px">
 //!
 //! ### Await After Notify
 //! Executing `waiter.await` after `notifier.notify()` doesn't suspend the current task.
@@ -52,11 +51,9 @@
 //!     println!("received notification");                 // 5
 //! });
 //! ```
-//! <img src="https://raw.githubusercontent.com/Dennis-Krasnov/Uringy/master/diagrams/oneshot_notify/await_after_notify_v1.png" style="width: 100%; max-width: 600px">
 //!
 //! ### Unused Waiter
 //! Dropping the waiter makes the `notifier.notify()` pointless.
-//!
 //! ```
 //! use uringy::runtime;
 //! use uringy::sync::oneshot_notify::oneshot_notify;
@@ -70,12 +67,10 @@
 //!     println!("sent notification to deaf ears");        // 4
 //! });
 //! ```
-//! <img src="https://raw.githubusercontent.com/Dennis-Krasnov/Uringy/master/diagrams/oneshot_notify/unused_waiter_v1.png" style="width: 100%; max-width: 600px">
 //!
 //! ### Unused Notifier
 //! Creating a cyclic dependency of waiters will cause a deadlock.
 //! It's even possible to deadlock within a single task.
-//!
 //! ```no_run
 //! use uringy::runtime;
 //! use uringy::sync::oneshot_notify::oneshot_notify;
@@ -89,7 +84,6 @@
 //!     unreachable!("Your task will hang forever!");
 //! });
 //! ```
-//! <img src="https://raw.githubusercontent.com/Dennis-Krasnov/Uringy/master/diagrams/oneshot_notify/unused_notifier_v1.png" style="width: 100%; max-width: 600px">
 
 use std::cell::RefCell;
 use std::future::Future;
@@ -182,16 +176,9 @@ impl Future for Waiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils;
     use impls::impls;
-    use noop_waker::noop_waker;
     use std::fmt::Debug;
-
-    fn poll(waiter: &mut Waiter) -> Poll<()> {
-        let waker = noop_waker();
-        let mut context = Context::from_waker(&waker);
-        let waiter = unsafe { Pin::new_unchecked(waiter) };
-        waiter.poll(&mut context)
-    }
 
     mod waiter {
         use super::*;
@@ -200,7 +187,7 @@ mod tests {
         fn pending_initially() {
             let (_notifier, mut waiter) = oneshot_notify();
 
-            assert!(poll(&mut waiter).is_pending());
+            assert!(utils::poll(&mut waiter).is_pending());
         }
 
         #[test]
@@ -209,31 +196,17 @@ mod tests {
 
             notifier.notify();
 
-            assert!(poll(&mut waiter).is_ready());
+            assert!(utils::poll(&mut waiter).is_ready());
         }
 
         #[test]
         fn pending_after_notifier_drop() {
             let (notifier, mut waiter) = oneshot_notify();
 
-            // Waiter is blissfully unaware of this
+            // Waiter is unaware of this
             drop(notifier);
 
-            assert!(poll(&mut waiter).is_pending());
-        }
-
-        #[test]
-        fn poll_after_ready() {
-            let (notifier, mut waiter) = oneshot_notify();
-
-            notifier.notify();
-
-            assert!(poll(&mut waiter).is_ready());
-
-            // Although this is technically undefined behaviour, keep returning Poll::Ready(())
-            assert!(poll(&mut waiter).is_ready());
-            assert!(poll(&mut waiter).is_ready());
-            assert!(poll(&mut waiter).is_ready());
+            assert!(utils::poll(&mut waiter).is_pending());
         }
 
         #[test]
@@ -246,10 +219,9 @@ mod tests {
         use super::*;
 
         #[test]
-        fn notify_after_waiter_drop() {
+        fn unaware_of_dropped_waiter() {
             let (notifier, waiter) = oneshot_notify();
 
-            // Notifier is blissfully unaware of this
             drop(waiter);
 
             // Shouldn't panic

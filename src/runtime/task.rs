@@ -1,87 +1,53 @@
 //! Task abstraction for building executors.
 //!
-//! separate from event loop. somewhat multi-purpose, can be tested independently.
+//! Inspired by https://docs.rs/async-task/latest/async_task.
 
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::ptr::NonNull;
 use std::task::{Context, Poll};
-use std::thread;
 
-/// Awaitable handle for the task's output.
-/// TODO: returned from spawn()
-///
-/// The task's output is wrapped with [`std::thread::Result`] to handle panics within the Future.
-///
-/// If [`JoinHandle`] is dropped, the task will continue to make progress in the background.
-#[derive(Debug)]
-pub struct JoinHandle<OUT> {
-    /// Pointer to the heap-allocated task.
-    /// A void pointer is used to avoid specifying FUT and SCH generics.
-    task: NonNull<()>,
+/// ...
+pub(crate) fn create<F: Future>(
+    future: F,
+    schedule: impl Fn(RunHandle, i32, i32),
+    runtime_id: i32,
+    runtime_fd: i32,
+) -> JoinHandle<F::Output> {
+    let task = raw::TaskPointer::new(future, schedule, runtime_id, runtime_fd);
 
-    /// Zero-sized marker to get rid of unused generic parameter error.
-    _marker: PhantomData<OUT>,
-}
+    task.schedule();
 
-// TODO: impl<R> Unpin for JoinHandle<R> {}
-
-// TODO
-impl<OUT> Drop for JoinHandle<OUT> {
-    fn drop(&mut self) {
-        // println!("join handle drop");
+    JoinHandle {
+        task,
+        _marker: PhantomData,
     }
 }
 
-impl<OUT> Future for JoinHandle<OUT> {
-    type Output = thread::Result<OUT>;
+/// Awaitable handle for the task's output.
+///
+/// If [`JoinHandle`] is dropped, the task will continue to make progress in the background.
+#[derive(Debug)]
+pub struct JoinHandle<O> {
+    task: raw::TaskPointer,
+    _marker: PhantomData<O>,
+}
+
+impl<O> Future for JoinHandle<O> {
+    type Output = O;
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
-        // Safety: The task is guaranteed to outlive its handles
-        let outcome = unsafe {
-            let vtable = raw::vtable(self.task);
-            (vtable.poll_output)(self.task, context.waker())
-        };
-
-        if outcome.is_null() {
-            // TODO: need to save waker and call wake!
-            Poll::Pending
-        } else {
-            let outcome = outcome as *const thread::Result<OUT>;
-            // Safety: Outcome is not null and both the handle and the raw task use the same generic type
-            let output: thread::Result<OUT> = unsafe { outcome.read() };
-            Poll::Ready(output)
+        match self.task.poll_output(context.waker()) {
+            Some(output) => Poll::Ready(output),
+            None => Poll::Pending,
         }
     }
 }
 
-/// ...
-pub(crate) fn create<FUT, SCH>(future: FUT, schedule: SCH) -> JoinHandle<FUT::Output>
-where
-    FUT: Future,
-    SCH: Fn(TaskHandle),
-{
-    let task = raw::Task::new(future, schedule);
-    let raw_box_pointer = Box::into_raw(Box::new(task)); // TODO: garbage collection
-    let task_pointer: NonNull<()> = NonNull::new(raw_box_pointer).unwrap().cast();
-
-    // Safety: The task is guaranteed to outlive its handles
-    unsafe {
-        // Initially schedule the task to be run
-        // Must be executed through a heap-based task pointer
-        let vtable = raw::vtable(task_pointer);
-        (vtable.schedule)(task_pointer);
+impl<O> Drop for JoinHandle<O> {
+    fn drop(&mut self) {
+        self.task.decrement_reference_count();
     }
-
-    JoinHandle {
-        task: task_pointer,
-        _marker: PhantomData,
-    }
-
-    // TODO: arc
-    // let task = Arc::new(raw::Task::new(future, schedule));
-    // let pointer = Arc::into_raw(task);
 }
 
 /// Handle to a task that exists only when it's ready to run.
@@ -92,467 +58,314 @@ where
 ///
 /// If [`TaskHandle`] is dropped, the task won't finish running and will leak resources.
 #[derive(Debug)]
-pub(crate) struct TaskHandle {
-    /// Pointer to the heap-allocated task.
-    /// A void pointer is used to avoid specifying FUT and SCH generics.
-    task: NonNull<()>,
-}
+pub(crate) struct RunHandle(raw::TaskPointer);
 
-impl TaskHandle {
+impl RunHandle {
     /// Run the task by polling its future.
     /// Consumes the [`TaskHandle`], it will reappear when the task's waker schedules the task to be run again.
     pub(crate) fn run(self) {
-        // Safety: The task is guaranteed to outlive its handles
-        unsafe {
-            let vtable = raw::vtable(self.task);
-            (vtable.run)(self.task);
-        };
+        self.0.run();
+    }
+
+    /// ...
+    /// for cross-thread.
+    /// must be valid pointer.
+    pub(crate) unsafe fn from_raw(pointer: *const ()) -> Self {
+        RunHandle(raw::TaskPointer::from_raw(pointer))
+    }
+
+    /// ...
+    /// for cross-thread.
+    pub(crate) fn as_raw(&self) -> *const () {
+        self.0.as_raw()
     }
 }
 
-// TODO
-impl Drop for TaskHandle {
+impl Drop for RunHandle {
     fn drop(&mut self) {
-        // println!("task handle drop");
+        self.0.decrement_reference_count();
     }
 }
 
 /// Lower-level task internals.
-/// Interfaced through a custom dynamic dispatch mechanism.
 mod raw {
     use std::future::Future;
     use std::mem::MaybeUninit;
-    use std::panic::AssertUnwindSafe;
     use std::pin::Pin;
-    use std::ptr::NonNull;
+    use std::ptr;
+    use std::sync::atomic::{AtomicU32, Ordering};
     use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-    use std::{panic, ptr, thread};
 
-    /// Internal task representation.
-    #[repr(C)]
-    pub(super) struct Task<FUT: Future, SCH: Fn(super::TaskHandle)> {
-        // The vtable must be the first field in the task memory structure
-        // The `#[repr(C)]` memory layout guarantees source-order layout
-        vtable: &'static TaskVTable,
+    /// ..
+    #[derive(Debug, Clone)]
+    pub(super) struct TaskPointer(ptr::NonNull<()>); // TODO: add deref to *const ()
 
-        // TODO: optimize internal layout (enum)
-        future: FUT,
-
-        finished: bool,
-
-        output: MaybeUninit<thread::Result<FUT::Output>>,
-
-        schedule: SCH,
-
-        /// TODO ...
-        awaiter: Option<Waker>,
-        //     spawned_on: thread::ThreadId,
-    }
-
-    /// Retrieves the vtable from a pointer to a [`Task`].
-    /// Relies on the [`Task`]'s internal memory layout.
-    pub(super) unsafe fn vtable(task: NonNull<()>) -> &'static TaskVTable {
-        let vtable_pointer = task.as_ptr() as *mut &'static TaskVTable;
-        *vtable_pointer as &'static TaskVTable
-    }
-
-    impl<FUT, SCH> Task<FUT, SCH>
-    where
-        FUT: Future,
-        SCH: Fn(super::TaskHandle),
-    {
-        /// Create a new task from a future and scheduling strategy function.
-        pub(super) fn new(future: FUT, schedule: SCH) -> Self {
-            // println!("task created from thread {:?}", std::thread::current().id());
-            Task {
-                // TODO: handle arc in allocate() and in run::<FUT, SCH>, etc.
-                // Non-generic vtable function pointers are initialized with monomorphized generic functions
-                vtable: &TaskVTable {
-                    run: do_run::<FUT, SCH>,
-                    poll_output: do_poll_output::<FUT, SCH>,
-                    schedule: do_schedule::<FUT, SCH>,
+    impl TaskPointer {
+        /// ...
+        /// setup custom dynamic dispatch to monomorphized functions...
+        pub(super) fn new<F: Future, S: Fn(super::RunHandle, i32, i32)>(
+            future: F,
+            schedule: S,
+            runtime_id: i32,
+            runtime_fd: i32,
+        ) -> Self {
+            let task = Box::new(Task {
+                // ...
+                vtable: TaskVTable {
+                    run: do_run::<F, S>,
+                    poll_output: do_poll_output::<F, S>,
+                    schedule: do_schedule::<F, S>,
+                    increment_reference_count: do_increment_reference_count::<F, S>,
+                    decrement_reference_count: do_decrement_reference_count::<F, S>,
                 },
-                future,
-                finished: false,
-                output: MaybeUninit::uninit(),
-                schedule,
-                awaiter: None,
-                // spawned_on: thread::current().id(),
-            }
+                state: TaskState {
+                    runtime_id,
+                    runtime_fd,
+                    reference_count: AtomicU32::new(1),
+                    future,
+                    finished: false,
+                    output: MaybeUninit::uninit(),
+                    awaiter: None,
+                    schedule,
+                },
+            });
+
+            TaskPointer(ptr::NonNull::new(Box::into_raw(task) as *mut ()).unwrap())
+            // TODO: expect
+        }
+
+        /// ...
+        pub(super) unsafe fn from_raw(pointer: *const ()) -> Self {
+            TaskPointer(ptr::NonNull::new(pointer as *mut ()).unwrap()) // TODO: expect
+        }
+
+        pub(super) fn as_raw(&self) -> *const () {
+            self.0.as_ptr()
+        }
+
+        /// ...
+        pub(super) fn run(&self) {
+            // Safety: ...
+            unsafe { ((*self.vtable()).run)(self.clone()) }
+        }
+
+        /// ...
+        pub(super) fn poll_output<O>(&self, waker: &Waker) -> Option<O> {
+            // Safety: ...
+            let output = unsafe { ((*self.vtable()).poll_output)(self.clone(), waker) };
+
+            // Safety: ...
+            output.map(|pointer| unsafe { (pointer.as_ptr() as *const O).read() })
+        }
+
+        /// ...
+        pub(super) fn schedule(&self) {
+            // Safety: ...
+            unsafe { ((*self.vtable()).schedule)(self.clone()) }
+        }
+
+        /// ...
+        pub(super) fn increment_reference_count(&self) {
+            // Safety: ...
+            unsafe { ((*self.vtable()).increment_reference_count)(self.clone()) }
+        }
+
+        /// ...
+        pub(super) fn decrement_reference_count(&self) {
+            // Safety: ...
+            unsafe { ((*self.vtable()).decrement_reference_count)(self.clone()) }
+        }
+
+        fn vtable(&self) -> *const TaskVTable {
+            // TODO: document the safety of the cast, in both places
+            self.0.as_ptr() as *const TaskVTable
         }
     }
 
-    /// Interface for custom dynamic dispatch.
-    /// Callable with void pointers to [`Task`]s (without generics).
-    pub(super) struct TaskVTable {
+    #[repr(C)]
+    struct Task<F: Future, S> {
+        // ...
+        // The vtable must be the first field in the task memory structure
+        // The `#[repr(C)]` memory layout guarantees source-order layout
+        vtable: TaskVTable,
+        state: TaskState<F, S>,
+    }
+
+    struct TaskState<F: Future, S> {
+        runtime_id: i32,
+        runtime_fd: i32,
+        /// built in arc...
+        reference_count: AtomicU32,
+        // TODO: enum
+        future: F,
+        finished: bool,
+        output: MaybeUninit<F::Output>,
+        awaiter: Option<Waker>,
+        schedule: S,
+    }
+
+    /// ...
+    struct TaskVTable {
         /// Run the task by polling its future.
-        pub(super) run: unsafe fn(NonNull<()>),
+        /// Only call from original thread...
+        run: unsafe fn(TaskPointer),
 
         /// Attempt to resolve future's output.
         /// Returns pointer to output or nullptr if it's not ready yet.
-        pub(super) poll_output: unsafe fn(NonNull<()>, &Waker) -> *const (),
+        /// Only call from original thread...
+        pub(super) poll_output: unsafe fn(TaskPointer, &Waker) -> Option<ptr::NonNull<()>>,
 
         /// Schedule this task using the user-specified function.
-        pub(super) schedule: unsafe fn(NonNull<()>),
+        pub(super) schedule: unsafe fn(TaskPointer),
+
+        /// ...
+        pub(super) increment_reference_count: unsafe fn(TaskPointer),
+
+        /// ...
+        pub(super) decrement_reference_count: unsafe fn(TaskPointer),
     }
 
-    /// Generics-based implementation of [`run`] in [`TaskVTable`].
-    unsafe fn do_run<FUT: Future, SCH: Fn(super::TaskHandle)>(pointer: NonNull<()>) {
-        // println!("task run from thread {:?}", std::thread::current().id());
-
-        // Safety: pointer is always a [`Task`]
-        let mut task_pointer = pointer.cast::<Task<FUT, SCH>>();
-        let task: &mut Task<FUT, SCH> = task_pointer.as_mut();
+    unsafe fn do_run<F: Future, S>(task_pointer: TaskPointer) {
+        // Safety: only called on one thread...
+        let task = &mut *(task_pointer.as_raw() as *mut Task<F, S>);
 
         // Pin the future to the stack
         // Safety: the future is already allocated on the heap
-        let future = Pin::new_unchecked(&mut task.future);
+        let future = Pin::new_unchecked(&mut task.state.future);
 
         // The [`Task`] also "implements" the waker interface
         // Safety: All waker invariants are upheld
-        let waker = Waker::from_raw(RawWaker::new(pointer.as_ptr(), &RAW_WAKER_VTABLE));
+        let waker = Waker::from_raw(RawWaker::new(task_pointer.as_raw(), &RAW_WAKER_VTABLE));
         let context = &mut Context::from_waker(&waker);
 
-        // Panics within futures are caught and handled
-        // TODO: is assertunwindsafe even safe to do? https://doc.rust-lang.org/std/panic/struct.AssertUnwindSafe.html
-        match panic::catch_unwind(AssertUnwindSafe(|| future.poll(context))) {
-            Ok(outcome) => {
-                if let Poll::Ready(output) = outcome {
-                    task.output = MaybeUninit::new(Ok(output));
-                    task.finished = true;
+        task_pointer.increment_reference_count();
 
-                    // Notify the waiting join handle
-                    if let Some(waker) = task.awaiter.take() {
-                        waker.wake();
-                    }
-                }
-            }
-            Err(err) => {
-                task.output = MaybeUninit::new(Err(err));
-                task.finished = true;
+        if let Poll::Ready(output) = future.poll(context) {
+            task.state.output = MaybeUninit::new(output);
+            task.state.finished = true;
 
-                // Notify the waiting join handle
-                if let Some(waker) = task.awaiter.take() {
-                    waker.wake();
-                }
+            // Notify the waiting join handle
+            if let Some(waker) = task.state.awaiter.take() {
+                waker.wake();
             }
         }
-        // FIXME: it turns out there's no overhead for catch unwind.
-        // if let Poll::Ready(output) = future.poll(context) {
-        //     task.output = MaybeUninit::new(Ok(output));
-        //     task.finished = true;
-        //
-        //     // Notify the waiting join handle
-        //     if let Some(waker) = task.awaiter.take() {
-        //         waker.wake();
-        //     }
-        // }
     }
 
-    /// Generics-based implementation of [`poll_output`] in [`TaskVTable`].
-    unsafe fn do_poll_output<FUT: Future, SCH: Fn(super::TaskHandle)>(
-        pointer: NonNull<()>,
+    unsafe fn do_poll_output<F: Future, S>(
+        task_pointer: TaskPointer,
         waker: &Waker,
-    ) -> *const () {
-        // Safety: pointer is always a [`Task`]
-        let mut task_pointer = pointer.cast::<Task<FUT, SCH>>();
-        let task: &mut Task<FUT, SCH> = task_pointer.as_mut();
+    ) -> Option<ptr::NonNull<()>> {
+        // Safety: only called on one thread...
+        let task = &mut *(task_pointer.as_raw() as *mut Task<F, S>);
 
-        if task.finished {
-            task.output.as_ptr() as *const thread::Result<FUT::Output> as *const ()
+        if task.state.finished {
+            Some(ptr::NonNull::new(task.state.output.as_mut_ptr() as *mut ()).unwrap())
         } else {
-            task.awaiter = Some(waker.clone());
-            ptr::null()
+            task.state.awaiter = Some(waker.clone());
+            None
         }
     }
 
-    /// Generics-based implementation of [`schedule`] in [`TaskVTable`].
-    unsafe fn do_schedule<FUT: Future, SCH: Fn(super::TaskHandle)>(pointer: NonNull<()>) {
-        // Safety: pointer is always a [`Task`]
-        let mut task_pointer = pointer.cast::<Task<FUT, SCH>>();
-        let task: &mut Task<FUT, SCH> = task_pointer.as_mut(); // FIXME: if many wakers wake at once, will be multiple &mut pointers...
+    unsafe fn do_schedule<F: Future, S: Fn(super::RunHandle, i32, i32)>(task_pointer: TaskPointer) {
+        task_pointer.increment_reference_count();
 
-        // Safety: TODO
-        (task.schedule)(super::TaskHandle { task: pointer });
+        // do_schedule can be called from any thread, and it takes a &Task<F, S>.
+        // do_run and do_poll_output are only called from the original thread, and they take a &mut Task<F, S>.
+        // Use ptr::addr_of! to avoid the undefined behaviour caused by holding a & and &mut concurrently.
+        let task = task_pointer.as_raw() as *const Task<F, S>;
+        let schedule = ptr::addr_of!((*task).state.schedule).read();
+        let runtime_id = ptr::addr_of!((*task).state.runtime_id).read();
+        let runtime_fd = ptr::addr_of!((*task).state.runtime_fd).read();
+        (schedule)(super::RunHandle(task_pointer), runtime_id, runtime_fd);
     }
 
-    // TODO: make sure I never have multiple &mut Tasks!!! (any number of wakers on any number of threads)
-    const RAW_WAKER_VTABLE: RawWakerVTable =
-        RawWakerVTable::new(clone_waker, wake, wake_by_ref, drop_waker);
-    //
-    unsafe fn clone_waker(pointer: *const ()) -> RawWaker {
-        // TODO: garbage collection
-        // println!(
-        //     "clone_waker: {pointer:?} from thread {:?}",
-        //     std::thread::current().id()
-        // );
+    unsafe fn do_increment_reference_count<F: Future, S>(task_pointer: TaskPointer) {
+        let task = task_pointer.as_raw() as *const Task<F, S>;
+        // Safety: ...
+        let reference_count = &*ptr::addr_of!((*task).state.reference_count);
 
-        //     println!("task clone waker {:?}", pointer);
-        //     //     // TODO: I think the solution is to put this waker stuff into the generic impl block for task.
-        //     //     // let task: &mut Task<F, S> = pointer.into(); // FIXME: don't have generics here, need to do dynamic dispatch
-        //     //     // TODO: increment arc
-        //     //     RawWaker::new(pointer.as_ptr(), &Self::RAW_WAKER_VTABLE)
+        // TODO: loosen ordering, see arc / boost docs
+        assert!(reference_count.fetch_add(1, Ordering::SeqCst) > 0);
+    }
+
+    unsafe fn do_decrement_reference_count<F: Future, S>(task_pointer: TaskPointer) {
+        let task = task_pointer.as_raw() as *const Task<F, S>;
+        // Safety: ...
+        let reference_count = &*ptr::addr_of!((*task).state.reference_count);
+
+        // TODO: loosen ordering, see arc / boost docs
+        if reference_count.fetch_sub(1, Ordering::SeqCst) != 1 {
+            return;
+        }
+
+        // Deallocate task
+        drop(Box::from_raw(task_pointer.as_raw() as *mut Task<F, S>));
+    }
+
+    /// ...
+    const RAW_WAKER_VTABLE: RawWakerVTable =
+        RawWakerVTable::new(do_clone_waker, do_wake, do_wake_by_ref, do_drop_waker);
+
+    unsafe fn do_clone_waker(pointer: *const ()) -> RawWaker {
+        let task_pointer = TaskPointer::from_raw(pointer);
+        task_pointer.increment_reference_count();
         RawWaker::new(pointer, &RAW_WAKER_VTABLE)
     }
 
-    unsafe fn wake(pointer: *const ()) {
-        // TODO: panic if called from another thread
-        // TODO: garbage collection
-        // println!(
-        //     "wake: {pointer:?} from thread {:?}",
-        //     std::thread::current().id()
-        // );
-
-        let task_pointer = NonNull::new(pointer as *mut ()).unwrap();
-        // Safety: The task is guaranteed to outlive its handles
-        let vtable = vtable(task_pointer);
-        (vtable.schedule)(task_pointer);
-
-        // if same_thread {
-        //     let pointer = NonNull::new(pointer as *mut ()).unwrap();
-        //     let vtable = vtable(pointer);
-        //     (vtable.schedule)(pointer);
-        // } else {
-        //     // panic?
-        //     // TODO: TDD
-        // }
-
-        //     println!("task wake {:?}", pointer);
-        //     //     let task: &mut Task<FUT, SCH> = pointer.into(); // FIXME: don't have generics here, need to do dynamic dispatch
-        //     //
-        //     //     // TODO: decrement arc
-        //     //     if task.spawned_on == thread::current().id() {
-        //     //         // TODO: check that not completed. not closed, not already scheduled
-        //     //         task.schedule(super::TaskHandle {
-        //     //             task: NonNull::from(pointer),
-        //     //         });
-        //     //     } else {
-        //     //         unimplemented!();
-        //     //     }
+    unsafe fn do_wake(pointer: *const ()) {
+        let task_pointer = TaskPointer::from_raw(pointer);
+        task_pointer.schedule();
+        task_pointer.decrement_reference_count();
     }
 
-    unsafe fn wake_by_ref(pointer: *const ()) {
-        // TODO: panic if called from another thread
-        // println!(
-        //     "wake_by_ref: {pointer:?} from thread {:?}",
-        //     std::thread::current().id()
-        // );
-
-        let task_pointer = NonNull::new(pointer as *mut ()).unwrap();
-        // Safety: The task is guaranteed to outlive its handles
-        let vtable = vtable(task_pointer);
-        (vtable.schedule)(task_pointer);
-
-        //     println!("task wake by ref {:?}", pointer);
-        //
-        //     //     // let task: &mut Task<F, S> = pointer.into(); // FIXME: don't have generics here, need to do dynamic dispatch
-        //     //     let task: &mut Task<FUT, SCH> = pointer.into();
-        //     //
-        //     //     if task.spawned_on == thread::current().id() {
-        //     //         // TODO: check that not completed. not closed, not already scheduled
-        //     //         task.schedule(super::TaskHandle {
-        //     //             task: NonNull::from(pointer),
-        //     //         });
-        //     //     } else {
-        //     //         unimplemented!();
-        //     //     }
+    unsafe fn do_wake_by_ref(pointer: *const ()) {
+        let task_pointer = TaskPointer::from_raw(pointer);
+        task_pointer.schedule();
     }
 
-    unsafe fn drop_waker(_pointer: *const ()) {
-        // TODO: garbage collection
+    unsafe fn do_drop_waker(pointer: *const ()) {
+        let task_pointer = TaskPointer::from_raw(pointer);
+        task_pointer.decrement_reference_count();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use noop_waker::noop_waker;
-    use std::cell::RefCell;
 
-    fn poll<OUT>(join_handle: &mut JoinHandle<OUT>) -> Poll<thread::Result<OUT>> {
-        let waker = noop_waker();
-        let mut context = Context::from_waker(&waker);
-        let join_handle = unsafe { Pin::new_unchecked(join_handle) };
-        join_handle.poll(&mut context)
-    }
+    mod join_handle {
+        use super::*;
 
-    #[test]
-    fn schedule_initially() {
-        let scheduled = RefCell::new(false);
-        // let mut scheduled = false;
+        #[test]
+        fn implements_traits() {
+            use impls::impls;
+            use std::fmt::Debug;
 
-        let _join_handle = create(async {}, |_task_handle| {
-            *scheduled.borrow_mut() = true;
-        });
+            assert!(impls!(JoinHandle<i32>: Debug & !Send & !Sync & !Clone));
+        }
 
-        assert!(*scheduled.borrow());
-    }
+        #[test]
+        fn conditionally_implements_debug() {
+            use impls::impls;
+            use std::fmt::Debug;
 
-    #[test]
-    fn dont_run_initially() {
-        let mut ran = false;
+            // Given
+            struct NotDebug;
 
-        let _join_handle = create(
-            async {
-                ran = true;
-            },
-            |_task_handle| {},
-        );
-
-        assert!(!ran);
-    }
-
-    #[test]
-    fn poll_future_on_task_handle_run() {
-        let mut ran = false;
-
-        let _join_handle = create(
-            async {
-                ran = true;
-            },
-            |task_handle| {
-                task_handle.run();
-            },
-        );
-
-        assert!(ran);
-    }
-
-    // #[test]
-    // fn pending_initially() {
-    //     let (_notifier, mut waiter) = oneshot_notify();
-    //
-    //     assert!(poll(&mut waiter).is_pending());
-    // }
-    // TODO: don't initially run schedule?
-
-    #[test]
-    fn await_outcome_on_join_handle() {
-        let mut join_handle = create(async { 42 }, |task_handle| {
-            task_handle.run();
-        });
-
-        if let Poll::Ready(output) = poll(&mut join_handle) {
-            assert_eq!(output.unwrap(), 42);
-        } else {
-            panic!("future not ready");
+            // Then
+            assert!(impls!(JoinHandle<NotDebug>: !Debug));
         }
     }
 
-    #[test]
-    fn await_error_on_join_handle_panic() {
-        let mut join_handle = create(async { panic!("oops") }, |task_handle| {
-            task_handle.run();
-        });
+    mod run_handle {
+        use super::*;
 
-        if let Poll::Ready(output) = poll(&mut join_handle) {
-            assert!(output.is_err());
-        } else {
-            panic!("future not ready");
+        #[test]
+        fn implements_traits() {
+            use impls::impls;
+            use std::fmt::Debug;
+
+            assert!(impls!(RunHandle: Debug & !Send & !Sync & !Clone));
         }
     }
-
-    struct ChangeOnDrop(*mut bool);
-
-    impl Drop for ChangeOnDrop {
-        fn drop(&mut self) {
-            unsafe {
-                *self.0 = true;
-            }
-        }
-    }
-
-    #[test]
-    #[ignore] // FIXME!
-    fn dealloc_output_after_join_handle_drop() {
-        let mut deallocated = false;
-        let change_on_drop = ChangeOnDrop(&mut deallocated);
-        let join_handle = create(async { change_on_drop }, |task_handle| {
-            task_handle.run(); // TODO: can't run immediately...
-        });
-
-        drop(join_handle);
-
-        assert!(deallocated);
-    }
-
-    // struct AFuture {
-    //     called: bool,
-    // }
-    //
-    // impl Future for AFuture {
-    //     type Output = ();
-    //
-    //     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-    //         println!("poll called! {:?}", self.called);
-    //         match self.called {
-    //             false => {
-    //                 self.called = true;
-    //                 cx.waker().wake_by_ref();
-    //                 Poll::Pending
-    //             }
-    //             true => Poll::Ready(()),
-    //         }
-    //     }
-    // }
-
-    // pub async fn yield_now() {
-    //     /// Yield implementation
-    //     struct YieldNow {
-    //         yielded: bool,
-    //     }
-    //
-    //     impl Future for YieldNow {
-    //         type Output = ();
-    //
-    //         fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-    //             if self.yielded {
-    //                 return Poll::Ready(());
-    //             }
-    //
-    //             self.yielded = true;
-    //             cx.waker().wake_by_ref();
-    //             Poll::Pending
-    //         }
-    //     }
-    //
-    //     YieldNow { yielded: false }.await
-    // }
-
-    struct YieldNow {
-        yielded: bool,
-    }
-
-    impl Future for YieldNow {
-        type Output = ();
-
-        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-            if self.yielded {
-                return Poll::Ready(());
-            }
-
-            self.yielded = true;
-            cx.waker().wake_by_ref();
-            Poll::Pending
-        }
-    }
-
-    #[test]
-    fn wake_calls_schedule() {
-        // let mut join_handle = create(async { yield_now().await }, |task_handle| {
-        let mut join_handle = create(YieldNow { yielded: false }, |task_handle| {
-            task_handle.run();
-        });
-
-        // assert!(poll(&mut join_handle).is_pending());
-        assert!(poll(&mut join_handle).is_ready());
-    }
-
-    // TODO: create a few wakers, test the same thing
-
-    // TODO: drops output if dropped join handle (before and after output is ready)
-
-    // TODO: waker works
-
-    // TODO: cross-thread
 }

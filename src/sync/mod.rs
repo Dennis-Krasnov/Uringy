@@ -9,7 +9,8 @@
 //!
 //! when to use each primitive (flow chart)
 
-// pub mod channel;
-// pub mod notify;
+pub mod channel;
+pub mod notify;
+pub mod oneshot_channel;
 pub mod oneshot_notify;
 // pub mod semaphore;

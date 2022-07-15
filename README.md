@@ -61,7 +61,7 @@ fn main() {
         });
 
         println!("hello");
-        handle.await.unwrap();
+        handle.await;
     });
 }
 ```
