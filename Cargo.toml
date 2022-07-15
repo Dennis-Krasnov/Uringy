@@ -15,11 +15,6 @@ rust-version = "1.58.1"
 [workspace]
 members = [
     "benchmark",
-
-    "ecosystem/nats",
-    "ecosystem/nats/proto",
-
-    "ecosystem/http",
 ]
 
 [features]
