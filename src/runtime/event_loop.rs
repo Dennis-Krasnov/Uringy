@@ -359,6 +359,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // The CI server isn't running a modern enough Linux kernel
     fn waker_on_another_thread() {
         // TODO: just use an async_channel instead!
         struct Timer {
