@@ -19,30 +19,6 @@ jobs:
       - name: Unit test
         run: cargo test
 
-#  benchmark:
-#    runs-on: ubuntu-latest
-#    steps:
-#      - name: Checkout repository
-#        uses: actions/checkout@v2
-#
-#      - name: Install Valgrind
-#        run: sudo apt install -y valgrind
-#
-#      - name: Cache Cargo
-#        uses: actions/cache@v2
-#        with:
-#          path: |
-#            ~/.cargo/bin/
-#            ~/.cargo/registry/index/
-#            ~/.cargo/registry/cache/
-#            ~/.cargo/git/db/
-#            target/
-#          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
-#
-#      - name: Benchmark
-#        run: cargo bench --bench "*_iai"
-#        working-directory: ./benchmark
-
   build_timings:
     runs-on: ubuntu-latest
     steps:
@@ -133,8 +109,8 @@ jobs:
 
       - name: Login to crates.io
         run: cargo login ${{ secrets.CRATES_IO_ACCESS_TOKEN }}
-        if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS != true }}
+        if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS == "false" }}
 
       - name: Publish to crates.io
         run: cargo publish
-        if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS != true }}
+        if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS == "false" }}
