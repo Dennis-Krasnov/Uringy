@@ -109,8 +109,8 @@ jobs:
 
       - name: Login to crates.io
         run: cargo login ${{ secrets.CRATES_IO_ACCESS_TOKEN }}
-        if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS == "false" }}
+        if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS == 'false' }}
 
       - name: Publish to crates.io
         run: cargo publish
-        if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS == "false" }}
+        if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS == 'false' }}
