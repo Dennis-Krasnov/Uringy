@@ -114,6 +114,15 @@ jobs:
       - verify_no_unused_dependencies
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+        if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS != true }}
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@cb2cf0cc7c5198d3364b9630e2c3d457f160790c # v1.4
+        with:
+          key: deploy-to-crates-io
+
       - name: Determine whether current version is already deployed
         run: |
           cargo install cargo-get
@@ -121,10 +130,6 @@ jobs:
           VERSION_EXISTS=$(curl -s https://crates.io/api/v1/crates/uringy | jq '.versions | map(.num) | contains(["'$CRATE_VERSION'"])')
           echo "::set-output name=VERSION_EXISTS::$VERSION_EXISTS"
         id: whether-deployed
-
-      - name: Checkout repository
-        uses: actions/checkout@v2
-        if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS != true }}
 
       - name: Login to crates.io
         run: cargo login ${{ secrets.CRATES_IO_ACCESS_TOKEN }}

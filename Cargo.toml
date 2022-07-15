@@ -15,6 +15,11 @@ rust-version = "1.58.1"
 [workspace]
 members = [
     "benchmark",
+
+    "ecosystem/nats",
+    "ecosystem/nats/proto",
+
+    "ecosystem/http",
 ]
 
 [features]
@@ -29,7 +34,7 @@ time = []
 noop-waker = "=0.1.0"
 slab = "0.4.6"
 libc = "=0.2.124"
-io-uring = { git = "https://github.com/Dennis-Krasnov/io-uring" }
+io-uring = { git = "https://github.com/Dennis-Krasnov/io-uring", version = "0.5.3" }
 
 [dev-dependencies]
 async-channel = "=1.6.1"
