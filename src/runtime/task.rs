@@ -180,6 +180,36 @@ mod raw {
             // TODO: document the safety of the cast, in both places
             self.0.as_ptr() as *const TaskVTable
         }
+
+        fn waker(&self) -> Waker {
+            const RAW_WAKER_VTABLE: RawWakerVTable =
+                RawWakerVTable::new(do_clone_waker, do_wake, do_wake_by_ref, do_drop_waker);
+
+            unsafe fn do_clone_waker(pointer: *const ()) -> RawWaker {
+                let task_pointer = TaskPointer::from_raw(pointer);
+                task_pointer.increment_reference_count();
+                RawWaker::new(pointer, &RAW_WAKER_VTABLE)
+            }
+
+            unsafe fn do_wake(pointer: *const ()) {
+                let task_pointer = TaskPointer::from_raw(pointer);
+                task_pointer.schedule();
+                task_pointer.decrement_reference_count();
+            }
+
+            unsafe fn do_wake_by_ref(pointer: *const ()) {
+                let task_pointer = TaskPointer::from_raw(pointer);
+                task_pointer.schedule();
+            }
+
+            unsafe fn do_drop_waker(pointer: *const ()) {
+                let task_pointer = TaskPointer::from_raw(pointer);
+                task_pointer.decrement_reference_count();
+            }
+
+            // Safety: All waker invariants are upheld
+            unsafe { Waker::from_raw(RawWaker::new(self.as_raw(), &RAW_WAKER_VTABLE)) }
+        }
     }
 
     #[repr(C)]
@@ -233,9 +263,8 @@ mod raw {
         // Safety: the future is already allocated on the heap
         let future = Pin::new_unchecked(&mut task.state.future);
 
-        // The [`Task`] also "implements" the waker interface
-        // Safety: All waker invariants are upheld
-        let waker = Waker::from_raw(RawWaker::new(task_pointer.as_raw(), &RAW_WAKER_VTABLE));
+        // The [`TaskPointer`] also "implements" the waker interface
+        let waker = task_pointer.waker();
         let context = &mut Context::from_waker(&waker);
 
         task_pointer.increment_reference_count();
@@ -300,32 +329,6 @@ mod raw {
 
         // Deallocate task
         drop(Box::from_raw(task_pointer.as_raw() as *mut Task<F, S>));
-    }
-
-    /// ...
-    const RAW_WAKER_VTABLE: RawWakerVTable =
-        RawWakerVTable::new(do_clone_waker, do_wake, do_wake_by_ref, do_drop_waker);
-
-    unsafe fn do_clone_waker(pointer: *const ()) -> RawWaker {
-        let task_pointer = TaskPointer::from_raw(pointer);
-        task_pointer.increment_reference_count();
-        RawWaker::new(pointer, &RAW_WAKER_VTABLE)
-    }
-
-    unsafe fn do_wake(pointer: *const ()) {
-        let task_pointer = TaskPointer::from_raw(pointer);
-        task_pointer.schedule();
-        task_pointer.decrement_reference_count();
-    }
-
-    unsafe fn do_wake_by_ref(pointer: *const ()) {
-        let task_pointer = TaskPointer::from_raw(pointer);
-        task_pointer.schedule();
-    }
-
-    unsafe fn do_drop_waker(pointer: *const ()) {
-        let task_pointer = TaskPointer::from_raw(pointer);
-        task_pointer.decrement_reference_count();
     }
 }
 
