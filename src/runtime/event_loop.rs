@@ -88,6 +88,9 @@ impl EventLoop {
             }
 
             if let Poll::Ready(output) = utils::poll(&mut future_output) {
+                // Perform last-minute IO for un-awaited syscalls in the original future
+                self.io_uring.submit().unwrap();
+
                 return output;
             }
 
@@ -112,7 +115,6 @@ impl EventLoop {
 
                 // Safety: ...
                 let run_handle = unsafe { task::RunHandle::from_raw(cqe.user_data() as *const ()) };
-                dbg!(&run_handle);
                 self.ready_tasks.borrow_mut().push_back(run_handle);
 
                 continue;
@@ -173,53 +175,43 @@ pub fn block_on<OUT>(future: impl Future<Output = OUT> + 'static, config: &Confi
 pub fn spawn<OUT>(future: impl Future<Output = OUT> + 'static) -> task::JoinHandle<OUT> {
     // ...
     fn schedule(task: task::RunHandle, runtime_id: i32, runtime_fd: i32) {
-        let mut do_temp_runtime = false;
-        let task_raw_pointer = task.as_raw();
+        // Skirt lifetime issues...
+        let task_raw_pointer = task.to_raw();
+
+        // ...
+        // don't await the syscall, result doesn't matter... need last minute submit in run_to_completion...
+        let do_syscall = move || {
+            syscall(
+                io_uring::opcode::MsgRing::new(
+                    runtime_fd,
+                    runtime_id as u32,
+                    task_raw_pointer as u64,
+                )
+                .build(),
+            );
+        };
 
         LOCAL_RUNTIME.with(|local_runtime| {
             match local_runtime.borrow().as_ref() {
                 Some(event_loop) => {
                     if event_loop.runtime_id == runtime_id {
-                        event_loop.ready_tasks.borrow_mut().push_back(task);
+                        // Safety: ...
+                        let run_handle = unsafe { task::RunHandle::from_raw(task_raw_pointer) };
+                        event_loop.ready_tasks.borrow_mut().push_back(run_handle);
                     } else {
-                        spawn(async move {
-                            let _res = syscall(
-                                io_uring::opcode::MsgRing::new(
-                                    runtime_fd,
-                                    runtime_id as u32,
-                                    task.as_raw() as u64,
-                                )
-                                .build(),
-                            )
-                            .await;
-                        });
+                        do_syscall();
                     }
                 }
                 None => {
-                    do_temp_runtime = true;
-                    std::mem::forget(task); // necessary to not decrement the reference count. it still lives on!
+                    block_on(
+                        async move {
+                            do_syscall();
+                        },
+                        &Config::default(),
+                    );
                 }
             }
         });
-
-        // Skirt lifetime issue...
-        // temporary runtime's block_on takes local_runtime.borrow_mut() which screws with this function's local_runtime.borrow().as_ref()
-        if do_temp_runtime {
-            block_on(
-                async move {
-                    let _res = syscall(
-                        io_uring::opcode::MsgRing::new(
-                            runtime_fd,
-                            runtime_id as u32,
-                            task_raw_pointer as u64,
-                        )
-                        .build(),
-                    )
-                    .await;
-                },
-                &Config::default(),
-            );
-        }
     }
 
     LOCAL_RUNTIME.with(|local_runtime| {
