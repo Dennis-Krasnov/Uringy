@@ -76,8 +76,11 @@ impl RunHandle {
 
     /// ...
     /// for cross-thread.
-    pub(crate) fn as_raw(&self) -> *const () {
-        self.0.as_raw()
+    /// doesn't consume reference count.
+    pub(crate) fn to_raw(self) -> *const () {
+        let pointer = self.0.as_raw();
+        std::mem::forget(self);
+        pointer
     }
 }
 
