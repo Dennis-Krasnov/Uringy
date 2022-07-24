@@ -273,6 +273,12 @@ mod raw {
         let waker = task_pointer.waker();
         let context = &mut Context::from_waker(&waker);
 
+        // wake can still be called after task has finished running...
+        // defined after defining waker, so that decrease_ref_count still runs
+        if task.state.finished {
+            return;
+        }
+
         if let Poll::Ready(output) = future.poll(context) {
             task.state.output = MaybeUninit::new(output);
             task.state.finished = true;
