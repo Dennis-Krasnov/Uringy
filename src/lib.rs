@@ -32,6 +32,7 @@
 
 #[cfg(feature = "fs")]
 pub mod fs;
+#[cfg(feature = "net")]
 pub mod net;
 #[cfg(feature = "process")]
 pub mod process;
