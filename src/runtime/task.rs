@@ -96,6 +96,7 @@ mod raw {
     use std::mem::MaybeUninit;
     use std::pin::Pin;
     use std::ptr;
+    use std::sync::atomic;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
@@ -316,8 +317,8 @@ mod raw {
         // Safety: ...
         let reference_count = &*ptr::addr_of!((*task).state.reference_count);
 
-        // TODO: loosen ordering, see arc / boost docs
-        assert!(reference_count.fetch_add(1, Ordering::SeqCst) > 0);
+        // See https://www.boost.org/doc/libs/1_55_0/doc/html/atomic/usage_examples.html and Arc docs.
+        assert!(reference_count.fetch_add(1, Ordering::Relaxed) > 0);
     }
 
     unsafe fn do_decrement_reference_count<F: Future, S>(task_pointer: TaskPointer) {
@@ -325,13 +326,13 @@ mod raw {
         // Safety: ...
         let reference_count = &*ptr::addr_of!((*task).state.reference_count);
 
-        // TODO: loosen ordering, see arc / boost docs
-        if reference_count.fetch_sub(1, Ordering::SeqCst) != 1 {
-            return;
-        }
+        // See https://www.boost.org/doc/libs/1_55_0/doc/html/atomic/usage_examples.html and Arc docs.
+        if reference_count.fetch_sub(1, Ordering::Release) == 1 {
+            atomic::fence(Ordering::Acquire);
 
-        // Deallocate task
-        drop(Box::from_raw(task_pointer.as_raw() as *mut Task<F, S>));
+            // Deallocate task
+            drop(Box::from_raw(task_pointer.as_raw() as *mut Task<F, S>));
+        }
     }
 }
 
