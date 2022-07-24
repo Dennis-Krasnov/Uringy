@@ -65,6 +65,8 @@ impl RunHandle {
     /// Consumes the [`TaskHandle`], it will reappear when the task's waker schedules the task to be run again.
     pub(crate) fn run(self) {
         self.0.run();
+        // optimization... transfer RC to the waker ....
+        std::mem::forget(self);
     }
 
     /// ...
@@ -270,8 +272,6 @@ mod raw {
         // The [`TaskPointer`] also "implements" the waker interface
         let waker = task_pointer.waker();
         let context = &mut Context::from_waker(&waker);
-
-        task_pointer.increment_reference_count();
 
         if let Poll::Ready(output) = future.poll(context) {
             task.state.output = MaybeUninit::new(output);
