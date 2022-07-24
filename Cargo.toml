@@ -18,9 +18,10 @@ members = [
 ]
 
 [features]
-default = ["fs", "time"]
+default = ["fs", "net", "time"]
 fs = []
-quic = [] # TODO: pulls in quiche dependency
+net = []
+quic = ["net"] # TODO: pulls in quiche dependency
 process = []
 time = []
 
