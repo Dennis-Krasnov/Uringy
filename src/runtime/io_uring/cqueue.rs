@@ -5,8 +5,8 @@ use std::fmt;
 use std::mem::MaybeUninit;
 use std::sync::atomic;
 
-use crate::sys;
-use crate::util::{unsync_load, Mmap};
+use crate::runtime::io_uring::sys;
+use crate::runtime::io_uring::util::{unsync_load, Mmap};
 
 pub(crate) struct Inner {
     head: *const atomic::AtomicU32,

@@ -5,9 +5,9 @@
 use std::mem;
 use std::os::unix::io::RawFd;
 
-use crate::squeue::Entry;
-use crate::sys;
-use crate::types::{self, sealed};
+use crate::runtime::io_uring::squeue::Entry;
+use crate::runtime::io_uring::sys;
+use crate::runtime::io_uring::types::{self, sealed};
 
 macro_rules! assign_fd {
     ( $sqe:ident . fd = $opfd:expr ) => {
@@ -15,7 +15,7 @@ macro_rules! assign_fd {
             sealed::Target::Fd(fd) => $sqe.fd = fd,
             sealed::Target::Fixed(i) => {
                 $sqe.fd = i as _;
-                $sqe.flags |= crate::squeue::Flags::FIXED_FILE.bits();
+                $sqe.flags |= crate::runtime::io_uring::squeue::Flags::FIXED_FILE.bits();
             }
         }
     };

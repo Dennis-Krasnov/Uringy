@@ -35,8 +35,8 @@ impl TcpStream {
     /// ...
     pub async unsafe fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
         runtime::syscall(
-            io_uring::opcode::Read::new(
-                io_uring::types::Fd(self.fd),
+            runtime::io_uring::opcode::Read::new(
+                runtime::io_uring::types::Fd(self.fd),
                 buffer.as_mut_ptr(),
                 buffer.len() as _,
             )
@@ -53,8 +53,8 @@ impl TcpStream {
     /// eg. static memory, or just ensuring to call .await (even if called on background task that didn't run to completion because root task finished)
     pub async unsafe fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
         runtime::syscall(
-            io_uring::opcode::Write::new(
-                io_uring::types::Fd(self.fd),
+            runtime::io_uring::opcode::Write::new(
+                runtime::io_uring::types::Fd(self.fd),
                 buffer.as_ptr(),
                 buffer.len() as _,
             )
@@ -65,11 +65,23 @@ impl TcpStream {
     }
 
     /// ...
+    pub fn try_clone(&self) -> std::io::Result<Self> {
+        let sync_tcp = unsafe { std::net::TcpStream::from_raw_fd(self.fd) };
+        let sync_tcp_copy = sync_tcp.try_clone()?;
+        mem::forget(sync_tcp);
+        Ok(TcpStream {
+            fd: sync_tcp_copy.into_raw_fd(),
+            _marker: PhantomData,
+        })
+    }
+
+    /// ...
     pub async fn close(self) -> std::io::Result<()> {
-        let result =
-            runtime::syscall(io_uring::opcode::Close::new(io_uring::types::Fd(self.fd)).build())
-                .await
-                .map(|_zero| ());
+        let result = runtime::syscall(
+            runtime::io_uring::opcode::Close::new(runtime::io_uring::types::Fd(self.fd)).build(),
+        )
+        .await
+        .map(|_zero| ());
 
         // Don't run drop
         mem::forget(self);
@@ -109,8 +121,8 @@ impl TcpListener {
         let mut length = mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
 
         let file_descriptor = runtime::syscall(
-            io_uring::opcode::Accept::new(
-                io_uring::types::Fd(self.fd),
+            runtime::io_uring::opcode::Accept::new(
+                runtime::io_uring::types::Fd(self.fd),
                 addr.as_mut_ptr() as *mut _,
                 &mut length,
             )

@@ -2,6 +2,8 @@
 
 use std::future::Future;
 
+pub(crate) mod io_uring;
+
 mod event_loop;
 mod task;
 

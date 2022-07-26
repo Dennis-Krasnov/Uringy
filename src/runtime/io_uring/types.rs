@@ -40,7 +40,7 @@ pub(crate) mod sealed {
     }
 }
 
-use crate::sys;
+use crate::runtime::io_uring::sys;
 use bitflags::bitflags;
 use std::os::unix::io::RawFd;
 

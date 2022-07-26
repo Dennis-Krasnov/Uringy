@@ -6,8 +6,8 @@ use std::time::Duration;
 /// Waits until duration has elapsed.
 pub async fn sleep(duration: Duration) {
     let result = runtime::syscall(
-        io_uring::opcode::Timeout::new(
-            &io_uring::types::Timespec::new()
+        runtime::io_uring::opcode::Timeout::new(
+            &runtime::io_uring::types::Timespec::new()
                 .sec(duration.as_secs())
                 .nsec(duration.subsec_nanos()),
         )
