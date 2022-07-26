@@ -34,7 +34,7 @@ static ID_GENERATOR: AtomicI32 = AtomicI32::new(i32::MAX);
 /// In async Rust terms, the EventLoop acts as both the Reactor and Executor.
 struct EventLoop {
     /// Low-level io_uring instance.
-    io_uring: io_uring::IoUring,
+    io_uring: crate::runtime::io_uring::IoUring,
 
     /// Links in-flight syscalls to their awaiting tasks.
     syscall_results: RefCell<Slab<oneshot_channel::Sender<io::Result<u32>>>>,
@@ -54,7 +54,8 @@ struct EventLoop {
 impl EventLoop {
     /// Creates a new instance of the Uringy runtime.
     fn new(config: &Config) -> Self {
-        let io_uring = io_uring::IoUring::new(config.sq_size as u32).expect("io_uring creation");
+        let io_uring = crate::runtime::io_uring::IoUring::new(config.sq_size as u32)
+            .expect("io_uring creation");
         assert!(io_uring.params().is_feature_nodrop());
 
         let runtime_id = ID_GENERATOR.fetch_sub(1, Ordering::SeqCst);
@@ -182,7 +183,7 @@ pub fn spawn<OUT>(future: impl Future<Output = OUT> + 'static) -> task::JoinHand
         // don't await the syscall, result doesn't matter... need last minute submit in run_to_completion...
         let do_syscall = move || {
             syscall(
-                io_uring::opcode::MsgRing::new(
+                crate::runtime::io_uring::opcode::MsgRing::new(
                     runtime_fd,
                     runtime_id as u32,
                     task_raw_pointer as u64,
@@ -224,7 +225,7 @@ pub fn spawn<OUT>(future: impl Future<Output = OUT> + 'static) -> task::JoinHand
 
 /// ...
 /// should really be unsafe!
-pub(crate) fn syscall(entry: io_uring::squeue::Entry) -> Syscall {
+pub(crate) fn syscall(entry: crate::runtime::io_uring::squeue::Entry) -> Syscall {
     // Use channel to ... wait for the result of the syscall
     let (s, r) = oneshot_channel::oneshot_channel();
 

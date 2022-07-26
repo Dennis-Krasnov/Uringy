@@ -2,10 +2,10 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::atomic;
 use std::{io, ptr};
 
-use crate::register::{execute, Probe};
-use crate::sys;
-use crate::util::{cast_ptr, Fd};
-use crate::Parameters;
+use crate::runtime::io_uring::register::{execute, Probe};
+use crate::runtime::io_uring::sys;
+use crate::runtime::io_uring::util::{cast_ptr, Fd};
+use crate::runtime::io_uring::Parameters;
 
 #[cfg(feature = "unstable")]
 use crate::register::Restriction;

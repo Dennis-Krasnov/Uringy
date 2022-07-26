@@ -3,7 +3,7 @@
 use std::os::unix::io::RawFd;
 use std::{fmt, io, mem, ptr};
 
-use crate::sys;
+use crate::runtime::io_uring::sys;
 
 pub(crate) fn execute(
     fd: RawFd,

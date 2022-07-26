@@ -4,8 +4,8 @@ use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::sync::atomic;
 
-use crate::sys;
-use crate::util::{unsync_load, Mmap};
+use crate::runtime::io_uring::sys;
+use crate::runtime::io_uring::util::{unsync_load, Mmap};
 
 use bitflags::bitflags;
 

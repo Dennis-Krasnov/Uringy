@@ -14,7 +14,6 @@ rust-version = "1.58.1"
 
 [workspace]
 members = [
-    "io_uring",
     "benchmark",
 ]
 
@@ -30,8 +29,8 @@ time = []
 # TODO: loosen dependencies
 noop-waker = "=0.1.0"
 slab = "0.4.6"
-libc = "=0.2.124"
-io-uring = { path = "io_uring" }
+libc = { version = "0.2.126", default-features = false } # don't link to the standard library
+bitflags = "1"
 
 [dev-dependencies]
 async-channel = "=1.6.1"
