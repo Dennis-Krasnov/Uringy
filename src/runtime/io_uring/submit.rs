@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::atomic;
 use std::{io, ptr};
@@ -251,18 +253,6 @@ impl<'a> Submitter<'a> {
     ///
     // This is marked no_run as it is only available from Linux 5.6+, however the latest Ubuntu (on
     // which CI runs) only has Linux 5.4.
-    /// ```no_run
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let io_uring = io_uring::IoUring::new(1)?;
-    /// let mut probe = io_uring::Probe::new();
-    /// io_uring.submitter().register_probe(&mut probe)?;
-    ///
-    /// if probe.is_supported(io_uring::opcode::Read::CODE) {
-    ///     println!("Reading is supported!");
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
     pub fn register_probe(&self, probe: &mut Probe) -> io::Result<()> {
         execute(
             self.fd.as_raw_fd(),

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! Completion Queue
 
 use std::fmt;

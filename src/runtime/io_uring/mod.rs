@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! The `io_uring` library for Rust.
 //!
 //! The crate only provides a summary of the parameters.

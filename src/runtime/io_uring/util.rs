@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::convert::TryFrom;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 use std::sync::atomic;

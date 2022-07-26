@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! Submission Queue
 
 use std::error::Error;

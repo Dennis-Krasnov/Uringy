@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! Operation codes that can be used to construct [`squeue::Entry`](crate::squeue::Entry)s.
 
 #![allow(clippy::new_without_default)]

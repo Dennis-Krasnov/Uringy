@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! Some register syscall related types or parameters.
 
 use std::os::unix::io::RawFd;

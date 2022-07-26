@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! Common Linux types not provided by libc.
 
 pub(crate) mod sealed {
