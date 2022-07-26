@@ -9,31 +9,10 @@
 
 use libc::*;
 
-#[cfg(all(feature = "bindgen", not(feature = "overwrite")))]
-include!(concat!(env!("OUT_DIR"), "/sys.rs"));
-
-#[cfg(any(
-    not(feature = "bindgen"),
-    all(feature = "bindgen", feature = "overwrite")
-))]
 include!("sys.rs");
 
-#[cfg(feature = "bindgen")]
-const SYSCALL_REGISTER: c_long = __NR_io_uring_register as _;
-
-#[cfg(not(feature = "bindgen"))]
 const SYSCALL_REGISTER: c_long = libc::SYS_io_uring_register;
-
-#[cfg(feature = "bindgen")]
-const SYSCALL_SETUP: c_long = __NR_io_uring_setup as _;
-
-#[cfg(not(feature = "bindgen"))]
 const SYSCALL_SETUP: c_long = libc::SYS_io_uring_setup;
-
-#[cfg(feature = "bindgen")]
-const SYSCALL_ENTER: c_long = __NR_io_uring_enter as _;
-
-#[cfg(not(feature = "bindgen"))]
 const SYSCALL_ENTER: c_long = libc::SYS_io_uring_enter;
 
 #[cfg(not(feature = "direct-syscall"))]
