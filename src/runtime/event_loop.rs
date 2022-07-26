@@ -92,7 +92,7 @@ impl EventLoop {
                 // Perform last-minute IO for un-awaited syscalls in the original future
                 self.io_uring.submit().unwrap();
 
-                return output;
+                break output;
             }
 
             // Block the thread until a syscall completes

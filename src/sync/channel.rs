@@ -67,7 +67,7 @@ impl<MSG> Sender<MSG> {
             if state.capacity.map_or(true, |cap| state.queue.len() < cap) {
                 state.queue.push_back(message);
                 state.no_longer_empty.notify_one();
-                return;
+                break;
             }
 
             // Give up mutable borrow during await
@@ -109,11 +109,11 @@ impl<MSG> Receiver<MSG> {
 
             if let Some(message) = state.queue.pop_front() {
                 state.no_longer_full.notify_one();
-                return Some(message);
+                break Some(message);
             }
 
             if state.is_closed {
-                return None;
+                break None;
             }
 
             // Give up mutable borrow during await
