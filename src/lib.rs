@@ -30,15 +30,19 @@
 //!
 //! [feature flags]: https://doc.rust-lang.org/cargo/reference/manifest.html#the-features-section
 
+// Core modules
+pub mod runtime;
+pub mod sync;
+
+// Optional modules
 #[cfg(feature = "fs")]
 pub mod fs;
 #[cfg(feature = "net")]
 pub mod net;
 #[cfg(feature = "process")]
 pub mod process;
-pub mod runtime;
-pub mod sync;
 #[cfg(feature = "time")]
 pub mod time;
 
+// Internal modules
 mod utils;
