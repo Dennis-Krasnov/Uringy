@@ -58,10 +58,10 @@ pub(crate) async fn actor(connection: Rc<Inner>) {
 
         // Write into bipbuffer...
         if let Ok(buffer) = bipbuffer.reserve(1024 * 1024) {
-            let bytes_read = unsafe { tcp.read(buffer) }.await.unwrap_or(0);
-            bipbuffer.commit(bytes_read);
+            let bytes_recv = unsafe { tcp.read(buffer) }.await.unwrap_or(0);
+            bipbuffer.commit(bytes_recv);
 
-            if bytes_read == 0 {
+            if bytes_recv == 0 {
                 println!("reader detected that server disconnected");
                 connection.manager_state.borrow_mut().disconnect();
                 continue;

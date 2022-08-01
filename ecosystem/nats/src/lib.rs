@@ -115,7 +115,15 @@ impl Inner {
             if let Ok(buffer) = state.bipbuffer.reserve(estimated_wire_size) {
                 if let Ok(wire_size) = operation.encode(buffer) {
                     state.bipbuffer.commit(wire_size);
+
+                    // Track end boundary of message
+                    let previous_boundary = *state.message_boundaries.iter().last().unwrap();
+                    state
+                        .message_boundaries
+                        .push_back(previous_boundary + wire_size);
+
                     state.no_longer_empty.notify_all();
+
                     break;
                 }
             }
