@@ -1,23 +1,26 @@
-//! Timeouts and delays.
-
 use crate::runtime;
 use std::time::Duration;
 
-/// Waits until duration has elapsed.
-pub async fn sleep(duration: Duration) {
-    let result = runtime::syscall(
-        runtime::io_uring::opcode::Timeout::new(
-            &runtime::io_uring::types::Timespec::new()
-                .sec(duration.as_secs())
-                .nsec(duration.subsec_nanos()),
-        )
-        .build(),
-    )
-    .await;
+/// ...
+pub fn sleep(duration: Duration) {
+    let timespec = io_uring::types::Timespec::new()
+        .sec(duration.as_secs())
+        .nsec(duration.subsec_nanos());
 
-    // Timeout got completed through expiration of the timer
+    let sqe = io_uring::opcode::Timeout::new(&timespec).build();
+    let result = runtime::syscall(sqe);
     assert_eq!(result.unwrap_err().raw_os_error().unwrap(), libc::ETIME);
 }
+
+// TODO: -> io::Result<()>to denote cancelled
+// let error = result.unwrap_err();
+// match error.raw_os_error().unwrap() {
+//     libc::ETIME => Ok(()),
+//     libc::ECANCELED => Err(error),
+//     _ => unreachable!(),
+// }
+
+// TODO: timeout (requires cancellation and contained tasks)
 
 #[cfg(test)]
 mod tests {
@@ -29,31 +32,23 @@ mod tests {
         use super::*;
 
         #[test]
-        fn returns_immediately_with_zero() {
-            // Problematic for timerfd-based implementations
-
-            runtime::block_on(async {
-                // Given
+        fn doesnt_hang() {
+            runtime::start(|| {
                 let before = Instant::now();
 
-                // When
-                sleep(Duration::from_millis(0)).await;
+                sleep(Duration::from_millis(0));
 
-                // Then
                 assert!(before.elapsed() <= Duration::from_millis(5));
             });
         }
 
         #[test]
         fn passes_time() {
-            runtime::block_on(async {
-                // Given
+            runtime::start(|| {
                 let before = Instant::now();
 
-                // When
-                sleep(Duration::from_millis(5)).await;
+                sleep(Duration::from_millis(5));
 
-                // Then
                 assert!(before.elapsed() >= Duration::from_millis(5));
             });
         }

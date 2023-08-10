@@ -1,5 +1,7 @@
 /target
-Cargo.lock
-.idea
 
-old
+# Libraries should ignore the lock file
+Cargo.lock
+
+# IDE garbage
+.idea
