@@ -75,6 +75,13 @@ impl RuntimeState {
 
     /// ...
     pub(crate) fn process_io_and_wait(&mut self) -> FiberIndex {
+        // Fast path
+        if let Some(fiber) = self.ready_fibers.pop_front() {
+            self.running_fiber = Some(fiber);
+            return fiber;
+        }
+
+        // Slow path
         loop {
             self.process_io();
 
