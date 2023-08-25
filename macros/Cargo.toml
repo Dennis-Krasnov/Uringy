@@ -1,6 +1,12 @@
 [package]
 name = "uringy-macros"
 version = "0.1.0"
+documentation = "https://docs.rs/uringy"
+repository = "https://github.com/Dennis-Krasnov/Uringy"
+homepage = "https://github.com/Dennis-Krasnov/Uringy"
+description = "Procedural macros for the uringy crate."
+license = "MIT"
+authors = ["Dennis Krasnov <dennis@krasnov.dev>"]
 edition = "2021"
 
 [lib]
