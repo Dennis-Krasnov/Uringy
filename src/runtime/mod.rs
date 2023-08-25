@@ -268,7 +268,7 @@ pub fn yield_now() {
 }
 
 /// Spawns a new fiber, returning a [`JoinHandle`] for it.
-pub fn spawn<F: FnOnce() -> T, T>(f: F) -> JoinHandle<T> {
+pub fn spawn<F: FnOnce() -> T + 'static, T: 'static>(f: F) -> JoinHandle<T> {
     assert!(runtime_exists());
 
     unsafe {
