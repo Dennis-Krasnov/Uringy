@@ -184,7 +184,7 @@ mod tests {
         runtime::start(|| {
             let (tx, rx) = unbounded();
 
-            runtime::spawn(|| {
+            runtime::spawn(move || {
                 tx.send(1).unwrap();
             });
 
