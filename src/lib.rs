@@ -1,4 +1,6 @@
 pub mod process;
 pub mod runtime;
 pub mod time;
-pub mod sync;
+
+#[cfg(feature = "macros")]
+pub use uringy_macros::start;
