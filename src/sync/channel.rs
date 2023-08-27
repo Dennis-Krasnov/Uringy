@@ -1,6 +1,6 @@
 //! ...
 
-use crate::runtime::{context_switch, runtime};
+use crate::runtime;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -37,9 +37,9 @@ impl<T> Sender<T> {
 
         state.queue.push_back(data);
 
-        if let Some(fiber) = state.no_longer_empty.pop_front() {
+        if let Some(waker) = state.no_longer_empty.pop_front() {
             unsafe {
-                runtime().ready_fibers.push_back(fiber);
+                waker.schedule();
             }
         }
 
@@ -103,15 +103,10 @@ impl<T> Receiver<T> {
             }
 
             unsafe {
-                let running = runtime().running();
-
-                state.no_longer_empty.push_back(running);
+                let (waker, waiter) = runtime::concurrency_pair();
+                state.no_longer_empty.push_back(waker);
                 drop(state); // give up mutable borrow during context switch
-
-                let to = runtime().process_io_and_wait();
-                let to = runtime().fibers.get(to).continuation;
-                let continuation = &mut runtime().fibers.get(running).continuation;
-                context_switch::jump(to, continuation); // woken up by sender
+                waiter.park();
             }
         }
     }
@@ -154,7 +149,7 @@ impl<T> Drop for ReceiverState<T> {
 
 #[derive(Debug)]
 struct ChannelState<T> {
-    no_longer_empty: VecDeque<crate::runtime::FiberIndex>,
+    no_longer_empty: VecDeque<runtime::Waker>,
     queue: VecDeque<T>,
     is_closed: bool,
 }
@@ -173,9 +168,9 @@ mod tests {
             tx.send(2).unwrap();
             tx.send(3).unwrap();
 
-            assert_eq!(rx.recv().unwrap(), 1);
-            assert_eq!(rx.recv().unwrap(), 2);
-            assert_eq!(rx.recv().unwrap(), 3);
+            assert_eq!(rx.recv(), Some(1));
+            assert_eq!(rx.recv(), Some(2));
+            assert_eq!(rx.recv(), Some(3));
         })
     }
 
@@ -188,7 +183,8 @@ mod tests {
                 tx.send(1).unwrap();
             });
 
-            assert_eq!(rx.recv().unwrap(), 1);
+            assert_eq!(rx.recv(), Some(1));
+            assert_eq!(rx.recv(), None);
         })
     }
 }

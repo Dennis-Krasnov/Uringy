@@ -12,25 +12,65 @@ thread_local! {
     static RUNTIME: UnsafeCell<Option<RuntimeState>> = UnsafeCell::new(None);
 }
 
-pub(crate) fn runtime_exists() -> bool {
+fn ensure_runtime_exists() {
     RUNTIME.with(|tls| {
         let runtime = unsafe { &*tls.get() };
-        runtime.is_some()
+        assert!(runtime.is_some());
     })
 }
 
 /// ...
-pub(crate) unsafe fn runtime() -> &'static mut RuntimeState {
+unsafe fn runtime() -> &'static mut RuntimeState {
     RUNTIME.with(|tls| {
         let borrow = &mut *tls.get();
         borrow.as_mut().unwrap() // TODO: unwrap_unchecked
     })
 }
 
-pub(crate) struct RuntimeState {
+/// ...
+/// Safety: Waiter can't be moved to another fiber.
+pub unsafe fn concurrency_pair() -> (Waker, Waiter) {
+    let running = runtime().running();
+    (Waker(running), Waiter(running))
+}
+
+/// ...
+#[derive(Debug)]
+pub struct Waker(FiberIndex);
+
+impl Waker {
+    /// Schedules current fiber to be executed eventually.
+    /// safety: waiter must be parked.
+    pub unsafe fn schedule(self) {
+        runtime().ready_fibers.push_back(self.0);
+    }
+
+    /// Schedules current fiber to be executed next.
+    /// Safety: waiter must be parked.
+    pub unsafe fn schedule_immediately(self) {
+        runtime().ready_fibers.push_front(self.0);
+    }
+}
+
+/// ...
+#[derive(Debug)]
+pub struct Waiter(FiberIndex);
+
+impl Waiter {
+    /// Parks current fiber.
+    /// Safety: must be parked on the same fiber it was created on.
+    pub unsafe fn park(self) {
+        let to = runtime().process_io_and_wait();
+        let to = runtime().fibers.get(to).continuation;
+        let continuation = &mut runtime().fibers.get(self.0).continuation;
+        context_switch::jump(to, continuation); // woken up by waker
+    }
+}
+
+struct RuntimeState {
     uring: uring::Uring,
-    pub(crate) fibers: Fibers,
-    pub(crate) ready_fibers: VecDeque<FiberIndex>,
+    fibers: Fibers,
+    ready_fibers: VecDeque<FiberIndex>,
     running_fiber: Option<FiberIndex>,
     stack_pool: Vec<*const u8>,
     bootstrap: mem::MaybeUninit<context_switch::Continuation>,
@@ -61,7 +101,7 @@ impl RuntimeState {
     }
 
     /// ...
-    pub(crate) fn running(&self) -> FiberIndex {
+    fn running(&self) -> FiberIndex {
         self.running_fiber.unwrap() // TODO: unwrap_unchecked, unsafe fn
     }
 
@@ -74,7 +114,7 @@ impl RuntimeState {
     }
 
     /// ...
-    pub(crate) fn process_io_and_wait(&mut self) -> FiberIndex {
+    fn process_io_and_wait(&mut self) -> FiberIndex {
         // Fast path
         if let Some(fiber) = self.ready_fibers.pop_front() {
             self.running_fiber = Some(fiber);
@@ -112,14 +152,14 @@ impl Drop for RuntimeState {
     }
 }
 
-pub(crate) struct Fibers(slab::Slab<FiberState>);
+struct Fibers(slab::Slab<FiberState>);
 
 impl Fibers {
     fn new() -> Self {
         Fibers(slab::Slab::new())
     }
 
-    pub(crate) fn get(&mut self, fiber: FiberIndex) -> &mut FiberState {
+    fn get(&mut self, fiber: FiberIndex) -> &mut FiberState {
         &mut self.0[fiber.0 as usize] // TODO: get unchecked, unsafe fn
     }
 
@@ -150,12 +190,12 @@ impl Fibers {
 /// max 4.3 billion...
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct FiberIndex(u32);
+struct FiberIndex(u32);
 
 #[derive(Debug)]
-pub(crate) struct FiberState {
+struct FiberState {
     stack_base: *const u8, // stack grows downwards
-    pub(crate) continuation: context_switch::Continuation,
+    continuation: context_switch::Continuation,
     is_completed: bool,
     join_handle: JoinHandleState,
     syscall_result: Option<io::Result<u32>>,
@@ -248,7 +288,7 @@ unsafe extern "C" fn start_trampoline<F: FnOnce() -> T, T>() -> ! {
 }
 
 pub fn yield_now() {
-    assert!(runtime_exists());
+    ensure_runtime_exists();
 
     unsafe {
         runtime().process_io();
@@ -269,7 +309,7 @@ pub fn yield_now() {
 
 /// Spawns a new fiber, returning a [`JoinHandle`] for it.
 pub fn spawn<F: FnOnce() -> T + 'static, T: 'static>(f: F) -> JoinHandle<T> {
-    assert!(runtime_exists());
+    ensure_runtime_exists();
 
     unsafe {
         let stack_base = runtime().allocate_stack();
@@ -356,7 +396,7 @@ impl<T> JoinHandle<T> {
 
     /// ...
     pub fn join(self) -> thread::Result<T> {
-        assert!(runtime_exists());
+        ensure_runtime_exists();
 
         unsafe {
             let stack_base = runtime().fibers.get(self.fiber).stack_base;
@@ -387,7 +427,7 @@ impl<T> JoinHandle<T> {
 
 impl<T> Drop for JoinHandle<T> {
     fn drop(&mut self) {
-        assert!(runtime_exists());
+        ensure_runtime_exists();
 
         unsafe {
             runtime().fibers.get(self.fiber).join_handle = JoinHandleState::Dropped;
@@ -405,7 +445,7 @@ impl<T> Drop for JoinHandle<T> {
 // TODO: top-level cancel
 
 pub(crate) fn syscall(sqe: io_uring::squeue::Entry) -> io::Result<u32> {
-    assert!(runtime_exists());
+    ensure_runtime_exists();
 
     unsafe {
         let running = runtime().running();
