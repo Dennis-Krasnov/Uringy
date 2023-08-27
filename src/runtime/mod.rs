@@ -297,13 +297,9 @@ pub fn yield_now() {
             return;
         }
 
-        let running = runtime().running();
-        runtime().ready_fibers.push_back(running);
-        let to = runtime().ready_fibers.pop_front().unwrap();
-        runtime().running_fiber = Some(to);
-        let to = runtime().fibers.get(to).continuation;
-        let continuation = &mut runtime().fibers.get(running).continuation;
-        context_switch::jump(to, continuation); // woken up immediately
+        let (waker, waiter) = concurrency_pair();
+        waker.schedule();
+        waiter.park();
     }
 }
 
