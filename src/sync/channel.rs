@@ -135,6 +135,14 @@ impl<T> Receiver<T> {
     }
 }
 
+impl<T> Iterator for Receiver<T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.recv()
+    }
+}
+
 #[derive(Debug)]
 struct ReceiverState<T> {
     state: Rc<RefCell<ChannelState<T>>>,
@@ -185,6 +193,35 @@ mod tests {
 
             assert_eq!(rx.recv(), Some(1));
             assert_eq!(rx.recv(), None);
+        })
+    }
+
+    #[test]
+    fn iterates_send_then_receive() {
+        runtime::start(|| {
+            let (tx, mut rx) = unbounded();
+
+            tx.send(1).unwrap();
+            tx.send(2).unwrap();
+            tx.send(3).unwrap();
+
+            assert_eq!(rx.next(), Some(1));
+            assert_eq!(rx.next(), Some(2));
+            assert_eq!(rx.next(), Some(3));
+        })
+    }
+
+    #[test]
+    fn iterates_receive_then_send() {
+        runtime::start(|| {
+            let (tx, mut rx) = unbounded();
+
+            runtime::spawn(move || {
+                tx.send(1).unwrap();
+            });
+
+            assert_eq!(rx.next(), Some(1));
+            assert_eq!(rx.next(), None);
         })
     }
 }
