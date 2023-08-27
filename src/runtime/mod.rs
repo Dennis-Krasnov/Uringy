@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::{io, marker, mem, panic, thread};
 
-pub(crate) mod context_switch;
+mod context_switch;
 mod stack;
 mod uring;
 
