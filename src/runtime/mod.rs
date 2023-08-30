@@ -892,3 +892,48 @@ mod tests {
             .unwrap();
         }
     }
+
+    // TODO: allow spawning tasks when cancelled, but they start off as cancelled
+
+    // #[test]
+    // fn cancels_syscall_with_global_cancel() {
+    //     start(|| {
+    //         let before = Instant::now();
+    //         let handle = spawn(|| {
+    //             let result = time::sleep(Duration::from_millis(5));
+    //             assert!(result.is_err());
+    //         });
+    //
+    //         yield_now();
+    //         cancel();
+    //         handle.join().unwrap();
+    //
+    //         assert!(before.elapsed() < Duration::from_millis(5));
+    //     });
+    // }
+    //
+    // #[test]
+    // fn cancels_syscall_with_handle_cancel() {
+    //     start(|| {
+    //         let before = Instant::now();
+    //         let handle = spawn(|| {
+    //             let result = time::sleep(Duration::from_millis(5));
+    //             assert!(result.is_err());
+    //         });
+    //
+    //         yield_now();
+    //         handle.cancel();
+    //         handle.join().unwrap();
+    //
+    //         assert!(before.elapsed() < Duration::from_millis(5));
+    //     });
+    // }
+    // FIXME: can I issue an async cancellation (sits in sq), but syscall completes normally, fibers exits,
+    //  new fiber starts with same id and issues syscall (sits in same sq), it gets cancelled :/
+    //  it's an issue because io_uring executes the SQEs out of order...
+    //  solution: syscall either waits for cancellation cq (if it's been cancelled), or use generational slotmap (prefer this)
+
+    // TODO: fail to spawn if cancelled
+    // TODO: fail to syscall if cancelled
+    // TODO: still do best effort syscalls in drop for close!
+}
