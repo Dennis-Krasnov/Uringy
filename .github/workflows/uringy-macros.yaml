@@ -26,10 +26,16 @@ jobs:
       - unit_test
     runs-on: ubuntu-latest
     steps:
+      - name: Cache cargo install
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/bin
+          key: cargo-install
+
       - name: Determine whether current version is already deployed
         run: |
           cargo install cargo-get
-          CRATE_VERSION=$(cargo get version | tr -d '\n')
+          CRATE_VERSION=$(cargo get package.version | tr -d '\n')
           VERSION_EXISTS=$(curl -s https://crates.io/api/v1/crates/uringy | jq '.versions | map(.num) | contains(["'$CRATE_VERSION'"])')
           echo "::set-output name=VERSION_EXISTS::$VERSION_EXISTS"
         id: whether-deployed
