@@ -83,7 +83,6 @@ jobs:
           echo $(curl -s https://crates.io/api/v1/crates/uringy | jq '.versions | map(.num)')
           echo $CRATE_VERSION $VERSION_EXISTS
         id: whether-deployed
-        working-directory: macros
 
       - name: Login to crates.io
         run: cargo login ${{ secrets.CRATES_IO_ACCESS_TOKEN }}
