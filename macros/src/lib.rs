@@ -15,7 +15,7 @@ pub fn start(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let result = quote! {
         #(#attributes)*
         #visibility #signature {
-            ::uringy::runtime::start(move || #body)
+            ::uringy::runtime::start(move || #body).unwrap();
         }
     };
 

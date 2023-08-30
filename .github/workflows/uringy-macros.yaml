@@ -1,0 +1,54 @@
+name: Uringy Macros Continuous Integration and Deployment
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - macros/**
+
+jobs:
+  unit_test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@cb2cf0cc7c5198d3364b9630e2c3d457f160790c # v1.4
+        with:
+          key: macros-unit-test
+
+      - name: Unit test
+        run: cargo test --package uringy-macros
+
+  deploy_to_crates_io:
+    needs:
+      - unit_test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine whether current version is already deployed
+        run: |
+          cargo install cargo-get
+          CRATE_VERSION=$(cargo get version | tr -d '\n')
+          VERSION_EXISTS=$(curl -s https://crates.io/api/v1/crates/uringy | jq '.versions | map(.num) | contains(["'$CRATE_VERSION'"])')
+          echo "::set-output name=VERSION_EXISTS::$VERSION_EXISTS"
+        id: whether-deployed
+
+      - name: Checkout repository
+        uses: actions/checkout@v2
+        if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS != true }}
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@cb2cf0cc7c5198d3364b9630e2c3d457f160790c # v1.4
+        with:
+          key: macros-deploy-to-crates-io
+        if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS != true }}
+
+      - name: Login to crates.io
+        run: cargo login ${{ secrets.CRATES_IO_ACCESS_TOKEN }}
+        if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS == 'false' }}
+
+      - name: Publish to crates.io
+        run: cargo publish
+        if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS == 'false' }}
+        working-directory: macros

@@ -1,6 +1,6 @@
 [package]
 name = "uringy-macros"
-version = "0.1.0"
+version = "0.2.0"
 documentation = "https://docs.rs/uringy"
 repository = "https://github.com/Dennis-Krasnov/Uringy"
 homepage = "https://github.com/Dennis-Krasnov/Uringy"
