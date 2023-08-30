@@ -1,6 +1,7 @@
 name: Uringy Macros Continuous Integration and Deployment
 
 on:
+  workflow_dispatch:
   push:
     branches: [ master ]
     paths:
