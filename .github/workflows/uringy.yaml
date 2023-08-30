@@ -80,8 +80,6 @@ jobs:
           CRATE_VERSION=$(cargo get package.version | tr -d '\n')
           VERSION_EXISTS=$(curl -s https://crates.io/api/v1/crates/uringy | jq '.versions | map(.num) | contains(["'$CRATE_VERSION'"])')
           echo "VERSION_EXISTS=$VERSION_EXISTS" >> $GITHUB_OUTPUT
-          echo $(curl -s https://crates.io/api/v1/crates/uringy | jq '.versions | map(.num)')
-          echo $CRATE_VERSION $VERSION_EXISTS
         id: whether-deployed
 
       - name: Login to crates.io

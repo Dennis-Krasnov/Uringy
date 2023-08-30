@@ -30,6 +30,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: macros-deploy-to-crates-io
+
       - name: Determine whether current version is already deployed
         run: |
           cargo install cargo-get
@@ -38,12 +43,6 @@ jobs:
           echo "VERSION_EXISTS=$VERSION_EXISTS" >> $GITHUB_OUTPUT
         id: whether-deployed
         working-directory: macros
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: macros-deploy-to-crates-io
-        if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS == 'false' }}
 
       - name: Login to crates.io
         run: cargo login ${{ secrets.CRATES_IO_ACCESS_TOKEN }}
