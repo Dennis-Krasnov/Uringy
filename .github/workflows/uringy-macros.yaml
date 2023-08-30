@@ -43,7 +43,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: macros-deploy-to-crates-io
-        if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS != true }}
+        if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS == 'false' }}
 
       - name: Login to crates.io
         run: cargo login ${{ secrets.CRATES_IO_ACCESS_TOKEN }}

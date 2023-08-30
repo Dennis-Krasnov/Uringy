@@ -75,6 +75,7 @@ jobs:
           CRATE_VERSION=$(cargo get package.version | tr -d '\n')
           VERSION_EXISTS=$(curl -s https://crates.io/api/v1/crates/uringy | jq '.versions | map(.num) | contains(["'$CRATE_VERSION'"])')
           echo "VERSION_EXISTS=$VERSION_EXISTS" >> $GITHUB_OUTPUT
+          echo $VERSION_EXISTS
         id: whether-deployed
         working-directory: macros
 
@@ -82,7 +83,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: deploy-to-crates-io
-        if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS != true }}
+        if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS == 'false' }}
 
       - name: Login to crates.io
         run: cargo login ${{ secrets.CRATES_IO_ACCESS_TOKEN }}
