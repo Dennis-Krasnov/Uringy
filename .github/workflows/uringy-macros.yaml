@@ -33,6 +33,9 @@ jobs:
           path: ~/.cargo/bin
           key: cargo-install
 
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
       - name: Determine whether current version is already deployed
         run: |
           cargo install cargo-get
@@ -40,10 +43,7 @@ jobs:
           VERSION_EXISTS=$(curl -s https://crates.io/api/v1/crates/uringy | jq '.versions | map(.num) | contains(["'$CRATE_VERSION'"])')
           echo "::set-output name=VERSION_EXISTS::$VERSION_EXISTS"
         id: whether-deployed
-
-      - name: Checkout repository
-        uses: actions/checkout@v2
-        if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS != true }}
+        working-directory: macros
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@cb2cf0cc7c5198d3364b9630e2c3d457f160790c # v1.4
