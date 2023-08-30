@@ -1,26 +1,23 @@
 use crate::runtime;
+use std::io;
 use std::time::Duration;
 
 /// ...
-pub fn sleep(duration: Duration) {
+pub fn sleep(duration: Duration) -> io::Result<()> {
     let timespec = io_uring::types::Timespec::new()
         .sec(duration.as_secs())
         .nsec(duration.subsec_nanos());
 
     let sqe = io_uring::opcode::Timeout::new(&timespec).build();
     let result = runtime::syscall(sqe);
-    assert_eq!(result.unwrap_err().raw_os_error().unwrap(), libc::ETIME);
+
+    let error = result.unwrap_err();
+    match error.raw_os_error().unwrap() {
+        libc::ETIME => Ok(()),
+        libc::ECANCELED => Err(error),
+        _ => unreachable!(),
+    }
 }
-
-// TODO: -> io::Result<()>to denote cancelled
-// let error = result.unwrap_err();
-// match error.raw_os_error().unwrap() {
-//     libc::ETIME => Ok(()),
-//     libc::ECANCELED => Err(error),
-//     _ => unreachable!(),
-// }
-
-// TODO: timeout (requires cancellation and contained tasks)
 
 #[cfg(test)]
 mod tests {
@@ -36,10 +33,11 @@ mod tests {
             runtime::start(|| {
                 let before = Instant::now();
 
-                sleep(Duration::from_millis(0));
+                sleep(Duration::from_millis(0)).unwrap();
 
-                assert!(before.elapsed() <= Duration::from_millis(5));
-            });
+                assert!(before.elapsed() < Duration::from_millis(5));
+            })
+            .unwrap();
         }
 
         #[test]
@@ -47,10 +45,11 @@ mod tests {
             runtime::start(|| {
                 let before = Instant::now();
 
-                sleep(Duration::from_millis(5));
+                sleep(Duration::from_millis(5)).unwrap();
 
-                assert!(before.elapsed() >= Duration::from_millis(5));
-            });
+                assert!(before.elapsed() > Duration::from_millis(5));
+            })
+            .unwrap();
         }
     }
 }
