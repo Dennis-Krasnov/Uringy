@@ -1,10 +1,9 @@
-name: Uringy Macros CI/CD
+name: Uringy CI/CD
 
 on:
-  workflow_dispatch:
   push:
     branches: [ master ]
-    paths:
+    paths-ignore:
       - macros/**
 
 jobs:
@@ -17,14 +16,54 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
         with:
-          key: macros-unit-test
+          key: unit-test
 
       - name: Unit test
-        run: cargo test --package uringy-macros
+        run: cargo test
+
+  build_timings:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: unit-timings
+
+      - name: Download Cargo dependencies
+        run: cargo fetch
+
+      - name: Time cold build
+        run: cargo build --release --timings
+
+      - name: Upload timings report
+        uses: actions/upload-artifact@v3
+        with:
+          name: build_timings_report
+          path: target/cargo-timings/cargo-timing.html
+
+  verify_msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: verify-msrv
+
+      - name: Verify whether MSRV is satisfiable
+        run: |
+          cargo install cargo-msrv
+          cargo msrv verify
 
   deploy_to_crates_io:
     needs:
       - unit_test
+      - verify_msrv
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -34,7 +73,7 @@ jobs:
         run: |
           cargo install cargo-get
           CRATE_VERSION=$(cargo get package.version | tr -d '\n')
-          VERSION_EXISTS=$(curl -s https://crates.io/api/v1/crates/uringy-macros | jq '.versions | map(.num) | contains(["'$CRATE_VERSION'"])')
+          VERSION_EXISTS=$(curl -s https://crates.io/api/v1/crates/uringy | jq '.versions | map(.num) | contains(["'$CRATE_VERSION'"])')
           echo "VERSION_EXISTS=$VERSION_EXISTS" >> $GITHUB_OUTPUT
         id: whether-deployed
         working-directory: macros
@@ -42,7 +81,7 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
         with:
-          key: macros-deploy-to-crates-io
+          key: deploy-to-crates-io
         if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS != true }}
 
       - name: Login to crates.io
@@ -52,4 +91,3 @@ jobs:
       - name: Publish to crates.io
         run: cargo publish
         if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS == 'false' }}
-        working-directory: macros

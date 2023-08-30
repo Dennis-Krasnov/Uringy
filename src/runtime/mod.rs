@@ -245,7 +245,7 @@ enum JoinHandleState {
 }
 
 /// ...
-pub fn start<F: FnOnce() -> T, T>(f: F) -> T {
+/// TODO: add Send bound, to avoid handle troubles
 pub fn start<F: FnOnce() -> T, T>(f: F) -> thread::Result<T> {
     unsafe {
         exclusive_runtime(|| {
@@ -355,15 +355,9 @@ unsafe fn spawn_inner<F: FnOnce() -> T + 'static, T: 'static>(
 ) -> JoinHandle<T> {
     let stack_base = runtime().allocate_stack();
 
-        let closure_pointer = (stack_base as *mut F).sub(1);
-        closure_pointer.write(f);
     let closure_pointer = (stack_base as *mut F).sub(1);
     closure_pointer.write(f);
 
-        let continuation = context_switch::prepare_stack(
-            stack_base.sub(closure_union_size::<F, T>()) as *mut u8,
-            spawn_trampoline::<F, T> as *const (),
-        );
     let continuation = context_switch::prepare_stack(
         stack_base.sub(closure_union_size::<F, T>()) as *mut u8,
         spawn_trampoline::<F, T> as *const (),
@@ -749,7 +743,6 @@ mod tests {
                 let result = spawn(|| panic!("oops")).join();
 
                 assert!(result.is_err());
-            });
             })
             .unwrap();
         }
