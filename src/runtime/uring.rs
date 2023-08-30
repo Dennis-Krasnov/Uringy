@@ -9,8 +9,8 @@ pub(super) struct Uring {
     io_uring: io_uring::IoUring,
 }
 
-// #[cfg(target_os = "linux")]
-// const ASYNC_CANCELLATION: UserData = UserData(u64::MAX);
+#[cfg(target_os = "linux")]
+const ASYNC_CANCELLATION: UserData = UserData(u64::MAX);
 
 #[cfg(target_os = "linux")]
 impl Uring {
@@ -33,9 +33,9 @@ impl Uring {
         let mut results = vec![]; // TODO: return iterator (to avoid allocating) that mutably borrows io_uring by holding cq
 
         for cqe in self.io_uring.completion() {
-            // if cqe.user_data() == ASYNC_CANCELLATION.0 {
-            //     continue;
-            // }
+            if cqe.user_data() == ASYNC_CANCELLATION.0 {
+                continue;
+            }
 
             let user_data = UserData(cqe.user_data());
 
@@ -55,11 +55,11 @@ impl Uring {
         results
     }
 
-    // /// ...
-    // pub(super) fn cancel_syscall(&mut self, user_data: UserData) {
-    //     let sqe = io_uring::opcode::AsyncCancel::new(user_data.0).build();
-    //     self.issue_syscall(ASYNC_CANCELLATION, sqe);
-    // }
+    /// ...
+    pub(super) fn cancel_syscall(&mut self, user_data: UserData) {
+        let sqe = io_uring::opcode::AsyncCancel::new(user_data.0).build();
+        self.issue_syscall(ASYNC_CANCELLATION, sqe);
+    }
 
     /// ...
     // TODO: make my own sqe struct (exposed to whole crate)

@@ -62,7 +62,7 @@ impl Waiter {
     pub unsafe fn park(self) {
         let to = runtime().process_io_and_wait();
         let to = runtime().fibers.get(to).continuation;
-        let continuation = &mut runtime().fibers.get(self.0).continuation;
+        let continuation = &mut runtime().fibers.get_mut(self.0).continuation;
         context_switch::jump(to, continuation); // woken up by waker
     }
 }
@@ -108,7 +108,7 @@ impl RuntimeState {
     fn process_io(&mut self) {
         for (user_data, result) in self.uring.process_cq() {
             let fiber = FiberIndex(user_data.0 as u32);
-            self.fibers.get(fiber).syscall_result = Some(result);
+            self.fibers.get_mut(fiber).syscall_result = Some(result);
             self.ready_fibers.push_back(fiber);
         }
     }
@@ -131,6 +131,20 @@ impl RuntimeState {
             }
 
             self.uring.wait_for_completed_syscall();
+        }
+    }
+
+    fn cancel(&mut self, fiber: FiberIndex) {
+        let state = self.fibers.get_mut(fiber);
+        state.is_cancelled = true;
+
+        if state.issuing_syscall {
+            self.uring.cancel_syscall(uring::UserData(fiber.0 as u64));
+        }
+
+        let children = state.children.clone();
+        for child in children {
+            self.cancel(child);
         }
     }
 }
@@ -159,8 +173,12 @@ impl Fibers {
         Fibers(slab::Slab::new())
     }
 
-    fn get(&mut self, fiber: FiberIndex) -> &mut FiberState {
-        &mut self.0[fiber.0 as usize] // TODO: get unchecked, unsafe fn
+    fn get(&self, fiber: FiberIndex) -> &FiberState {
+        &self.0[fiber.0 as usize]
+    }
+
+    fn get_mut(&mut self, fiber: FiberIndex) -> &mut FiberState {
+        &mut self.0[fiber.0 as usize]
     }
 
     fn add(
@@ -168,6 +186,7 @@ impl Fibers {
         parent: Option<FiberIndex>,
         stack_base: *const u8,
         continuation: context_switch::Continuation,
+        is_contained: bool,
     ) -> FiberIndex {
         let index = self.0.insert(FiberState {
             stack_base,
@@ -177,12 +196,24 @@ impl Fibers {
             syscall_result: None,
             parent,
             children: BTreeSet::new(),
+            is_cancelled: false,
+            is_contained,
+            issuing_syscall: false,
         });
         FiberIndex(index as u32)
     }
 
     fn remove(&mut self, fiber: FiberIndex) {
         self.0.remove(fiber.0 as usize);
+    }
+
+    fn nearest_contained_ancestor(&self, fiber: FiberIndex) -> FiberIndex {
+        let mut nearest_contained_ancestor = fiber;
+        while !self.get(nearest_contained_ancestor).is_contained {
+            // Root fiber is contained
+            nearest_contained_ancestor = self.get(nearest_contained_ancestor).parent.unwrap();
+        }
+        nearest_contained_ancestor
     }
 }
 
@@ -201,6 +232,9 @@ struct FiberState {
     syscall_result: Option<io::Result<u32>>,
     parent: Option<FiberIndex>,
     children: BTreeSet<FiberIndex>, // 24B, hashmap is 48B
+    is_cancelled: bool,
+    is_contained: bool,
+    issuing_syscall: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -212,6 +246,7 @@ enum JoinHandleState {
 
 /// ...
 pub fn start<F: FnOnce() -> T, T>(f: F) -> T {
+pub fn start<F: FnOnce() -> T, T>(f: F) -> thread::Result<T> {
     unsafe {
         exclusive_runtime(|| {
             let stack_base = runtime().allocate_stack();
@@ -224,17 +259,14 @@ pub fn start<F: FnOnce() -> T, T>(f: F) -> T {
                 start_trampoline::<F, T> as *const (),
             );
 
-            let root_fiber = runtime().fibers.add(None, stack_base, continuation);
+            let root_fiber = runtime().fibers.add(None, stack_base, continuation, true);
             runtime().running_fiber = Some(root_fiber);
 
             let bootstrap = runtime().bootstrap.as_mut_ptr();
             context_switch::jump(continuation, bootstrap); // woken up by root fiber
 
             let output_pointer = (stack_base as *const thread::Result<T>).sub(1);
-            match output_pointer.read() {
-                Ok(output) => output,
-                Err(e) => panic::resume_unwind(e),
-            }
+            output_pointer.read()
         })
     }
 }
@@ -266,13 +298,13 @@ unsafe extern "C" fn start_trampoline<F: FnOnce() -> T, T>() -> ! {
     let closure = closure_pointer.read();
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| (closure)()));
     output_pointer.write(result);
-    runtime().fibers.get(running).is_completed = true;
+    runtime().fibers.get_mut(running).is_completed = true;
 
     // Wait for children
     if !runtime().fibers.get(running).children.is_empty() {
         let to = runtime().process_io_and_wait();
         let to = runtime().fibers.get(to).continuation;
-        let continuation = &mut runtime().fibers.get(running).continuation;
+        let continuation = &mut runtime().fibers.get_mut(running).continuation;
         context_switch::jump(to, continuation); // woken up by last child
     }
 
@@ -307,24 +339,44 @@ pub fn yield_now() {
 pub fn spawn<F: FnOnce() -> T + 'static, T: 'static>(f: F) -> JoinHandle<T> {
     ensure_runtime_exists();
 
-    unsafe {
-        let stack_base = runtime().allocate_stack();
+    unsafe { spawn_inner(f, false) }
+}
+
+/// ...
+pub fn contain<F: FnOnce() -> T + 'static, T: 'static>(f: F) -> thread::Result<T> {
+    ensure_runtime_exists();
+
+    unsafe { spawn_inner(f, true) }.join()
+}
+
+unsafe fn spawn_inner<F: FnOnce() -> T + 'static, T: 'static>(
+    f: F,
+    is_contained: bool,
+) -> JoinHandle<T> {
+    let stack_base = runtime().allocate_stack();
 
         let closure_pointer = (stack_base as *mut F).sub(1);
         closure_pointer.write(f);
+    let closure_pointer = (stack_base as *mut F).sub(1);
+    closure_pointer.write(f);
 
         let continuation = context_switch::prepare_stack(
             stack_base.sub(closure_union_size::<F, T>()) as *mut u8,
             spawn_trampoline::<F, T> as *const (),
         );
+    let continuation = context_switch::prepare_stack(
+        stack_base.sub(closure_union_size::<F, T>()) as *mut u8,
+        spawn_trampoline::<F, T> as *const (),
+    );
 
-        let parent = runtime().running();
-        let child = runtime().fibers.add(Some(parent), stack_base, continuation);
-        runtime().fibers.get(parent).children.insert(child);
-        runtime().ready_fibers.push_back(child);
+    let parent = runtime().running();
+    let child = runtime()
+        .fibers
+        .add(Some(parent), stack_base, continuation, is_contained);
+    runtime().fibers.get_mut(parent).children.insert(child);
+    runtime().ready_fibers.push_back(child);
 
-        JoinHandle::new(child)
-    }
+    JoinHandle::new(child)
 }
 
 unsafe extern "C" fn spawn_trampoline<F: FnOnce() -> T, T>() -> ! {
@@ -336,14 +388,21 @@ unsafe extern "C" fn spawn_trampoline<F: FnOnce() -> T, T>() -> ! {
     // Execute closure
     let closure = closure_pointer.read();
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| (closure)()));
+    let is_err = result.is_err();
     output_pointer.write(result);
-    runtime().fibers.get(running).is_completed = true;
+    runtime().fibers.get_mut(running).is_completed = true;
+
+    // Cancel nearest contained block
+    if is_err {
+        let nearest_contained_ancestor = runtime().fibers.nearest_contained_ancestor(running);
+        runtime().cancel(nearest_contained_ancestor);
+    }
 
     // Wait for children
     if !runtime().fibers.get(running).children.is_empty() {
         let to = runtime().process_io_and_wait();
         let to = runtime().fibers.get(to).continuation;
-        let continuation = &mut runtime().fibers.get(running).continuation;
+        let continuation = &mut runtime().fibers.get_mut(running).continuation;
         context_switch::jump(to, continuation); // woken up by last child
     }
 
@@ -354,7 +413,7 @@ unsafe extern "C" fn spawn_trampoline<F: FnOnce() -> T, T>() -> ! {
 
     // Handle parent
     let parent = runtime().fibers.get(running).parent.unwrap();
-    runtime().fibers.get(parent).children.remove(&running);
+    runtime().fibers.get_mut(parent).children.remove(&running);
 
     if runtime().fibers.get(parent).is_completed && runtime().fibers.get(parent).children.is_empty()
     {
@@ -406,11 +465,11 @@ impl<T> JoinHandle<T> {
             // Wait for completion
             let running = runtime().running();
 
-            runtime().fibers.get(self.fiber).join_handle = JoinHandleState::Waiting(running);
+            runtime().fibers.get_mut(self.fiber).join_handle = JoinHandleState::Waiting(running);
 
             let to = runtime().process_io_and_wait();
             let to = runtime().fibers.get(to).continuation;
-            let continuation = &mut runtime().fibers.get(running).continuation;
+            let continuation = &mut runtime().fibers.get_mut(running).continuation;
             context_switch::jump(to, continuation); // woken up by joined fiber
 
             assert!(runtime().fibers.get(self.fiber).is_completed);
@@ -418,7 +477,14 @@ impl<T> JoinHandle<T> {
         }
     }
 
-    // TODO: cancel
+    /// ...
+    pub fn cancel(&self) {
+        ensure_runtime_exists();
+
+        unsafe {
+            runtime().cancel(self.fiber);
+        }
+    }
 }
 
 impl<T> Drop for JoinHandle<T> {
@@ -426,7 +492,7 @@ impl<T> Drop for JoinHandle<T> {
         ensure_runtime_exists();
 
         unsafe {
-            runtime().fibers.get(self.fiber).join_handle = JoinHandleState::Dropped;
+            runtime().fibers.get_mut(self.fiber).join_handle = JoinHandleState::Dropped;
 
             // Deallocate stack
             if runtime().fibers.get(self.fiber).is_completed {
@@ -446,6 +512,9 @@ pub(crate) fn syscall(sqe: io_uring::squeue::Entry) -> io::Result<u32> {
     unsafe {
         let running = runtime().running();
 
+        assert!(!runtime().fibers.get(running).issuing_syscall);
+        runtime().fibers.get_mut(running).issuing_syscall = true;
+
         assert!(runtime().fibers.get(running).syscall_result.is_none());
         runtime()
             .uring
@@ -455,11 +524,19 @@ pub(crate) fn syscall(sqe: io_uring::squeue::Entry) -> io::Result<u32> {
 
         if running != to {
             let to = runtime().fibers.get(to).continuation;
-            let continuation = &mut runtime().fibers.get(running).continuation;
+            let continuation = &mut runtime().fibers.get_mut(running).continuation;
             context_switch::jump(to, continuation); // woken up by event loop
         }
 
-        runtime().fibers.get(running).syscall_result.take().unwrap()
+        assert!(runtime().fibers.get(running).issuing_syscall);
+        runtime().fibers.get_mut(running).issuing_syscall = false;
+
+        runtime()
+            .fibers
+            .get_mut(running)
+            .syscall_result
+            .take()
+            .unwrap()
     }
 }
 
@@ -480,10 +557,32 @@ const fn closure_union_size<F: FnOnce() -> T, T>() -> usize {
     }
 }
 
+/// ...
+pub fn cancel() {
+    ensure_runtime_exists();
+
+    unsafe {
+        let running = runtime().running();
+        runtime().cancel(running);
+    }
+}
+
+/// ...
+pub fn is_cancelled() -> bool {
+    ensure_runtime_exists();
+
+    unsafe {
+        let running = runtime().running();
+        runtime().fibers.get(running).is_cancelled
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time;
     use std::thread;
+    use std::time::{Duration, Instant};
 
     mod start {
         use super::*;
@@ -493,41 +592,23 @@ mod tests {
         fn returns_output() {
             let output = start(|| 123);
 
-            assert_eq!(output, 123);
+            assert_eq!(output.unwrap(), 123);
         }
 
         #[test]
-        #[should_panic]
-        fn rethrows_panic() {
-            start(|| panic!("oops"));
-        }
+        fn catches_panic() {
+            let result = start(|| panic!("oops"));
 
-        #[test]
-        fn works_consecutively() {
-            start(|| {});
-            start(|| {});
+            assert!(result.is_err());
         }
 
         #[test]
         #[should_panic]
         fn cant_nest() {
             start(|| {
-                start(|| {});
-            });
-        }
-
-        #[test]
-        fn works_in_parallel() {
-            let handle = thread::spawn(|| {
-                start(|| {
-                    thread::sleep(Duration::from_millis(2));
-                });
-            });
-
-            thread::sleep(Duration::from_millis(1));
-            start(|| {});
-
-            assert!(handle.join().is_ok());
+                start(|| {}).unwrap();
+            })
+            .unwrap();
         }
 
         #[test]
@@ -540,9 +621,84 @@ mod tests {
 
                 let handle = spawn(|| unsafe { VALUE += 1 });
                 mem::forget(handle);
-            });
+            })
+            .unwrap();
 
             assert_eq!(unsafe { VALUE }, 2);
+        }
+
+        #[test]
+        fn works_consecutively() {
+            start(|| {}).unwrap();
+            start(|| {}).unwrap();
+        }
+
+        #[test]
+        fn works_in_parallel() {
+            let handle = thread::spawn(|| {
+                start(|| {
+                    thread::sleep(Duration::from_millis(2));
+                })
+                .unwrap();
+            });
+
+            thread::sleep(Duration::from_millis(1));
+            start(|| {}).unwrap();
+
+            assert!(handle.join().is_ok());
+        }
+    }
+
+    mod contain {
+        use super::*;
+
+        #[test]
+        fn returns_output() {
+            start(|| {
+                let output = contain(|| 123);
+
+                assert_eq!(output.unwrap(), 123);
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn catches_panic() {
+            start(|| {
+                let result = contain(|| panic!("oops"));
+
+                assert!(result.is_err());
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn cant_nest_start() {
+            start(|| {
+                let result = contain(|| start(|| {}).unwrap());
+
+                assert!(result.is_err());
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn waits_for_children() {
+            start(|| {
+                static mut VALUE: usize = 0;
+
+                contain(|| {
+                    let handle = spawn(|| unsafe { VALUE += 1 });
+                    drop(handle);
+
+                    let handle = spawn(|| unsafe { VALUE += 1 });
+                    mem::forget(handle);
+                })
+                .unwrap();
+
+                assert_eq!(unsafe { VALUE }, 2);
+            })
+            .unwrap();
         }
     }
 
@@ -550,30 +706,62 @@ mod tests {
         use super::*;
 
         #[test]
-        fn returns_output() {
+        fn returns_child_output() {
             start(|| {
                 let handle = spawn(|| 123);
 
                 let output = handle.join();
 
                 assert_eq!(output.unwrap(), 123);
-            });
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn returns_non_child_output() {
+            start(|| {
+                let other = spawn(|| 123);
+                let handle = spawn(|| other.join().unwrap());
+
+                let output = handle.join();
+
+                assert_eq!(output.unwrap(), 123);
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn returns_already_completed_output() {
+            start(|| {
+                let handle = spawn(|| 123);
+
+                yield_now();
+                let output = handle.join();
+
+                assert_eq!(output.unwrap(), 123);
+            })
+            .unwrap();
         }
 
         #[test]
         fn catches_panic() {
             start(|| {
                 let result = spawn(|| panic!("oops")).join();
+
                 assert!(result.is_err());
             });
+            })
+            .unwrap();
         }
 
         #[test]
         fn cant_nest_start() {
             start(|| {
                 let result = spawn(|| start(|| {})).join();
+
                 assert!(result.is_err());
-            });
+            })
+            .unwrap();
         }
 
         #[test]
@@ -592,7 +780,8 @@ mod tests {
                 .unwrap();
 
                 assert_eq!(unsafe { VALUE }, 2);
-            });
+            })
+            .unwrap();
         }
     }
 
@@ -603,7 +792,8 @@ mod tests {
         fn to_same_fiber() {
             start(|| {
                 yield_now();
-            });
+            })
+            .unwrap();
         }
 
         #[test]
@@ -617,7 +807,95 @@ mod tests {
                 yield_now();
 
                 assert_eq!(unsafe { VALUE }, 1);
-            });
+            })
+            .unwrap();
         }
     }
-}
+
+    mod cancellation {
+        use super::*;
+
+        #[test]
+        fn initially_not_cancelled() {
+            start(|| {
+                assert!(!is_cancelled());
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn function_cancels_fiber_hierarchy() {
+            start(|| {
+                contain(|| {
+                    // Propagates to children
+                    let handle = spawn(|| {
+                        assert!(is_cancelled());
+                    });
+
+                    cancel();
+                    handle.join().unwrap();
+                    // TODO: consider cancel_propagating
+                    assert!(is_cancelled());
+                })
+                .unwrap();
+
+                // Stops at contain block
+                assert!(!is_cancelled());
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn panic_cancels_fiber_hierarchy() {
+            static mut GRAND_CHILD_CANCELLED: bool = false;
+
+            start(|| {
+                let _ = contain(|| {
+                    let handle = spawn(|| {
+                        // Propagates to children
+                        spawn(|| unsafe {
+                            dbg!(is_cancelled());
+                            GRAND_CHILD_CANCELLED = is_cancelled();
+                        });
+
+                        panic!("oops");
+                    });
+
+                    handle.join().unwrap();
+                    assert!(is_cancelled());
+                });
+
+                assert!(unsafe { GRAND_CHILD_CANCELLED });
+
+                // Stops at contain block
+                assert!(!is_cancelled());
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn method_cancels_fiber_hierarchy() {
+            start(|| {
+                let handle = spawn(|| {
+                    // Propagates to children
+                    spawn(|| {
+                        assert!(is_cancelled());
+                    });
+
+                    yield_now();
+                    assert!(is_cancelled());
+                });
+
+                yield_now();
+                handle.cancel();
+                handle.join().unwrap();
+
+                // TODO: consider handle.cancel_propagating()
+                // TODO: consider handle.is_cancelled, is_finished
+
+                // Doesn't propagate to parents
+                assert!(!is_cancelled());
+            })
+            .unwrap();
+        }
+    }
