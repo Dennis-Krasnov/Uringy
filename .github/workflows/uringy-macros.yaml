@@ -27,12 +27,6 @@ jobs:
       - unit_test
     runs-on: ubuntu-latest
     steps:
-      - name: Cache cargo install
-        uses: actions/cache@v3
-        with:
-          path: ~/.cargo/bin
-          key: cargo-install
-
       - name: Checkout repository
         uses: actions/checkout@v2
 
