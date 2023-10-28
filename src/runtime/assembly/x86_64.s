@@ -10,31 +10,27 @@
  * 0x00 : fc_mxcsr  - 4B                rip : instruction pointer (r/o)
  ******************************************************************************/
 
-// fn(rdi: sp, rsi: func) -> rax: sp
-.global prepare_stack
+.global prepare_stack                   // fn(rdi: stack, rsi: func) -> rax: continuation
 prepare_stack:
-    mov rax, rdi                        // The first argument of make_fcontext() == top of context-stack
+    mov rax, rdi                        // The first argument of prepare_stack() == top of context-stack
     and rax, -16                        // Shift address in RAX to lower 16-byte boundary
     lea rax, [rax - 0x40]               // Reserve space for context-data on context-stack
 
     stmxcsr [rax]                       // Save MMX control-word and status-word
     fnstcw  [rax + 0x04]                // Save x87 control-word
-    mov [rax + 0x28], rsi               // 2-rd arg of make_fcontext() == address of context-fn, store in RBX
+    mov [rax + 0x28], rsi               // 2-rd arg of prepare_stack() == address of context-fn, store in RBX
 
     lea rcx, [rip + trampoline]         // Compute absolute address of label trampoline
-    mov [rax + 0x38], rcx               // Save the addr of trampoline as a return-address for context-fn
-                                        // will be entered after the context-function returns
+    mov [rax + 0x38], rcx               // Save the addr of trampoline as a return-address for func will be entered after the context-function returns
     ret                                 // Return pointer to context-data
 
 .global trampoline
 trampoline:
     push rbp                            // Store return address on stack, fix stack alignment
-    // set rdi == clo_data
-    // set rsi == stack_ptr
     jmp rbx                             // Jump to context-function
 
 
-.global jump
+.global jump                            // fn (rdi: from, rsi: to)
 jump:
     lea rsp, [rsp - 0x38]               // Prepare stack (RIP is already stored in stack)
 
@@ -45,11 +41,10 @@ jump:
     mov [rsp + 0x18], r14
     mov [rsp + 0x20], r15
     mov [rsp + 0x28], rbx
-    mov [rsp + 0x30], rbp               // Save base poiter
+    mov [rsp + 0x30], rbp
 
-    mov [rsi], rsp                      // Save SP (pointing to context-data) to the secong arg ptr
-    mov rsp, rdi                        // Restore SP (pointing to context-data) from RDI
-    mov r8, [rsp + 0x38]                // Restore return-address
+    mov [rdi], rsp                      // Save SP (pointing to context-data) to the first arg (RDI)
+    mov rsp, [rsi]                      // Restore SP (pointing to context-data) from second arg (RSI)
 
     ldmxcsr [rsp]                       // Restore MMX control-word and status-word
     fldcw   [rsp + 0x04]                // Restore x87 control-word
@@ -58,7 +53,7 @@ jump:
     mov r14, [rsp + 0x18]
     mov r15, [rsp + 0x20]
     mov rbx, [rsp + 0x28]
-    mov rbp, [rsp + 0x30]               // Restore base poiter
-    lea rsp, [rsp + 0x40]               // Clear stack
+    mov rbp, [rsp + 0x30]
+    lea rsp, [rsp + 0x38]               // Clear stack
 
-    jmp r8                              // Jump to context fn
+    ret                                 // Jump to the address at [rsp]

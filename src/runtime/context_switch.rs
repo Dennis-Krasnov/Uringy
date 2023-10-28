@@ -1,18 +1,21 @@
-//! ...
+//! Cross-architecture support for userspace multitasking.
 
 use std::arch::global_asm;
 
-/// ...
+/// Handle to a stack pointer set up for context switching.
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone)]
 pub(super) struct Continuation(*const ());
 
 extern "C" {
-    /// ...
-    pub(super) fn prepare_stack(stack: *mut u8, func: *const ()) -> Continuation;
+    /// Initializes a stack for context switching.
+    pub(super) fn prepare_stack(stack: *mut u8, func: extern "C" fn() -> !) -> Continuation;
 
-    /// ...
-    pub(super) fn jump(to: Continuation, save: *mut Continuation);
+    /// Executes a context switch.
+    ///
+    /// Spills registers, stores updated stack pointer in [from].
+    /// Updates stack pointer to [to], restores registers.
+    pub(super) fn jump(from: *mut Continuation, to: *const Continuation);
 }
 
 #[cfg(not(target_arch = "x86_64"))]

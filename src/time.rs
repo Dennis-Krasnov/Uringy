@@ -1,9 +1,9 @@
-use crate::runtime;
-use std::io;
 use std::time::Duration;
 
-/// ...
-pub fn sleep(duration: Duration) -> io::Result<()> {
+use crate::{runtime, Error};
+
+/// Puts the current fiber to sleep for at least [duration].
+pub fn sleep(duration: Duration) -> crate::CancellableResult<()> {
     let timespec = io_uring::types::Timespec::new()
         .sec(duration.as_secs())
         .nsec(duration.subsec_nanos());
@@ -11,26 +11,31 @@ pub fn sleep(duration: Duration) -> io::Result<()> {
     let sqe = io_uring::opcode::Timeout::new(&timespec).build();
     let result = runtime::syscall(sqe);
 
-    let error = result.unwrap_err();
-    match error.raw_os_error().unwrap() {
-        libc::ETIME => Ok(()),
-        libc::ECANCELED => Err(error),
-        _ => unreachable!(),
+    match result {
+        Ok(_) => unreachable!(),
+        Err(error) => match error {
+            Error::Original(e) => assert_eq!(e.raw_os_error().unwrap(), libc::ETIME),
+            Error::Cancelled => return Err(Error::Cancelled),
+        },
     }
+
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::runtime;
     use std::time::Instant;
+
+    use runtime::start;
+
+    use super::*;
 
     mod sleep {
         use super::*;
 
         #[test]
-        fn doesnt_hang() {
-            runtime::start(|| {
+        fn doesnt_hang_when_sleeping_zero() {
+            start(|| {
                 let before = Instant::now();
 
                 sleep(Duration::from_millis(0)).unwrap();
@@ -42,7 +47,7 @@ mod tests {
 
         #[test]
         fn passes_time() {
-            runtime::start(|| {
+            start(|| {
                 let before = Instant::now();
 
                 sleep(Duration::from_millis(5)).unwrap();

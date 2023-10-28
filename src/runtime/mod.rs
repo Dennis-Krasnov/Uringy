@@ -1,431 +1,299 @@
+use std::any::Any;
 use std::collections::{BTreeSet, VecDeque};
 use std::num::NonZeroUsize;
-use std::{io, marker, mem, panic, thread};
+use std::{hint, io, marker, mem, panic, thread};
 
 mod context_switch;
 mod stack;
+mod tls;
 mod uring;
 
-use std::cell::UnsafeCell;
+/// ...
+pub fn start<F: FnOnce() -> T, T>(f: F) -> thread::Result<T> {
+    tls::exclusive_runtime(|| {
+        let (original, root) = tls::runtime(|runtime| {
+            let root_fiber = runtime.create_fiber(f, start_trampoline::<F, T>, false);
+            runtime.running_fiber = Some(root_fiber);
 
-thread_local! {
-    static RUNTIME: UnsafeCell<Option<RuntimeState>> = UnsafeCell::new(None);
-}
+            (
+                runtime.original.as_mut_ptr(),
+                &runtime.running().continuation as *const context_switch::Continuation,
+            )
+        });
 
-fn ensure_runtime_exists() {
-    RUNTIME.with(|tls| {
-        let runtime = unsafe { &*tls.get() };
-        assert!(runtime.is_some());
+        unsafe { context_switch::jump(original, root) };
+        tls::runtime(|rt| unsafe { rt.running().stack.union_ref::<thread::Result<T>>().read() })
     })
 }
 
-/// ...
-unsafe fn runtime() -> &'static mut RuntimeState {
-    RUNTIME.with(|tls| {
-        let borrow = &mut *tls.get();
-        borrow.as_mut().unwrap() // TODO: unwrap_unchecked
-    })
-}
+extern "C" fn start_trampoline<F: FnOnce() -> T, T>() -> ! {
+    // execute closure
+    let closure: F = tls::runtime(|runtime| {
+        let fiber = runtime.running();
+        unsafe { fiber.stack.union_ref::<F>().read() }
+    });
 
-/// ...
-/// Safety: Waiter can't be moved to another fiber.
-pub unsafe fn concurrency_pair() -> (Waker, Waiter) {
-    let running = runtime().running();
-    (Waker(running), Waiter(running))
-}
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| (closure)()));
+    hint::black_box(&result); // removing this causes a segfault in release mode
 
-/// ...
-#[derive(Debug)]
-pub struct Waker(FiberIndex);
+    tls::runtime(|runtime| {
+        let fiber = runtime.running();
+        fiber.is_completed = true;
+        fiber.is_cancelled = true; // prevent cancel scheduling while waiting for children
+        unsafe { fiber.stack.union_mut::<thread::Result<T>>().write(result) };
+    });
 
-impl Waker {
-    /// Schedules current fiber to be executed eventually.
-    /// safety: waiter must be parked.
-    pub unsafe fn schedule(self) {
-        runtime().ready_fibers.push_back(self.0);
+    // wait for children
+    if tls::runtime(|rt| !rt.running().children.is_empty()) {
+        park(|_| {}); // woken up by last child
     }
 
-    /// Schedules current fiber to be executed next.
-    /// Safety: waiter must be parked.
-    pub unsafe fn schedule_immediately(self) {
-        runtime().ready_fibers.push_front(self.0);
-    }
-}
+    // deallocate stack
+    tls::runtime(|runtime| {
+        let stack = runtime.running().stack;
+        runtime.stack_pool.push(stack);
+    });
 
-/// ...
-#[derive(Debug)]
-pub struct Waiter(FiberIndex);
-
-impl Waiter {
-    /// Parks current fiber.
-    /// Safety: must be parked on the same fiber it was created on.
-    pub unsafe fn park(self) {
-        let to = runtime().process_io_and_wait();
-        let to = runtime().fibers.get(to).continuation;
-        let continuation = &mut runtime().fibers.get_mut(self.0).continuation;
-        context_switch::jump(to, continuation); // woken up by waker
-    }
+    // return to original thread
+    let mut dummy = mem::MaybeUninit::uninit();
+    let original = tls::runtime(|runtime| runtime.original.as_ptr());
+    unsafe { context_switch::jump(dummy.as_mut_ptr(), original) };
+    unreachable!();
 }
 
 struct RuntimeState {
     uring: uring::Uring,
-    fibers: Fibers,
+    fibers: slab::Slab<FiberState>,
     ready_fibers: VecDeque<FiberIndex>,
     running_fiber: Option<FiberIndex>,
-    stack_pool: Vec<*const u8>,
-    bootstrap: mem::MaybeUninit<context_switch::Continuation>,
+    stack_pool: Vec<StackBase>,
+    original: mem::MaybeUninit<context_switch::Continuation>,
 }
 
 impl RuntimeState {
     fn new() -> Self {
         RuntimeState {
             uring: uring::Uring::new(),
-            fibers: Fibers::new(),
+            fibers: slab::Slab::new(),
             ready_fibers: VecDeque::new(),
             running_fiber: None,
             stack_pool: Vec::new(),
-            bootstrap: mem::MaybeUninit::uninit(),
+            original: mem::MaybeUninit::uninit(),
         }
     }
 
-    /// Returns bottom of stack...
-    fn allocate_stack(&mut self) -> *const u8 {
-        if let Some(stack_bottom) = self.stack_pool.pop() {
-            return stack_bottom;
-        }
+    fn create_fiber<F: FnOnce() -> T, T>(
+        &mut self,
+        f: F,
+        trampoline: extern "C" fn() -> !,
+        is_cancelled: bool,
+    ) -> FiberIndex {
+        // allocate stack
+        let mut stack_base = self.stack_pool.pop().unwrap_or_else(|| {
+            let usable_pages = NonZeroUsize::new(32).unwrap();
+            let stack = stack::Stack::new(NonZeroUsize::MIN, usable_pages).unwrap();
+            let stack_base = StackBase(stack.base());
+            mem::forget(stack);
+            stack_base
+        });
 
-        let stack = stack::Stack::new(NonZeroUsize::MIN, NonZeroUsize::new(32).unwrap()).unwrap();
-        let stack_base = stack.base();
-        mem::forget(stack); // FIXME
-        stack_base
+        unsafe { stack_base.union_mut::<F>().write(f) };
+
+        let index = self.fibers.insert(FiberState {
+            stack: stack_base,
+            continuation: unsafe {
+                context_switch::prepare_stack(stack_base.after_union::<F, T>(), trampoline)
+            },
+            join_handle: JoinHandleState::Unused,
+            parent: None,
+            children: BTreeSet::new(),
+            syscall_result: None,
+            is_completed: false,
+            is_cancelled,
+            // is_scheduled: false,
+        });
+
+        FiberIndex(index)
     }
 
-    /// ...
-    fn running(&self) -> FiberIndex {
-        self.running_fiber.unwrap() // TODO: unwrap_unchecked, unsafe fn
+    fn running(&mut self) -> &mut FiberState {
+        // TODO: #[cfg(not(debug_assertions))]: unwrap_unchecked, get_unchecked. document performance difference.
+        let fiber_index = self.running_fiber.expect("...");
+        &mut self.fibers[fiber_index.0]
     }
 
-    fn process_io(&mut self) {
-        for (user_data, result) in self.uring.process_cq() {
-            let fiber = FiberIndex(user_data.0 as u32);
-            self.fibers.get_mut(fiber).syscall_result = Some(result);
-            self.ready_fibers.push_back(fiber);
-        }
-    }
-
-    /// ...
-    fn process_io_and_wait(&mut self) -> FiberIndex {
-        // Fast path
-        if let Some(fiber) = self.ready_fibers.pop_front() {
-            self.running_fiber = Some(fiber);
-            return fiber;
-        }
-
-        // Slow path
+    fn process_io(&mut self) -> *const context_switch::Continuation {
         loop {
-            self.process_io();
+            for (user_data, result) in self.uring.process_cq() {
+                let fiber = FiberIndex(user_data.0 as usize);
+                self.fibers[fiber.0].syscall_result = Some(result);
+                Waker(fiber).schedule_with(self);
+            }
 
             if let Some(fiber) = self.ready_fibers.pop_front() {
                 self.running_fiber = Some(fiber);
-                break fiber;
+                // self.fibers[fiber.0].is_scheduled = false;
+                break &self.fibers[fiber.0].continuation as *const context_switch::Continuation;
             }
 
             self.uring.wait_for_completed_syscall();
         }
     }
 
-    fn cancel(&mut self, fiber: FiberIndex) {
-        let state = self.fibers.get_mut(fiber);
-        state.is_cancelled = true;
+    fn cancel(&mut self, root: FiberIndex) {
+        // TODO: if is_cancelled { return } (short circuit)
 
-        if state.issuing_syscall {
-            self.uring.cancel_syscall(uring::UserData(fiber.0 as u64));
+        if !self.fibers[root.0].is_cancelled && root != self.running_fiber.unwrap() {
+            Waker(root).schedule_with(self);
         }
 
-        let children = state.children.clone();
-        for child in children {
+        self.fibers[root.0].is_cancelled = true;
+
+        for child in self.fibers[root.0].children.clone() {
             self.cancel(child);
         }
+    }
+
+    // TODO: is_contained flag
+    fn nearest_contained(&self, _fiber: FiberIndex) -> FiberIndex {
+        FiberIndex(0)
     }
 }
 
 impl Drop for RuntimeState {
     fn drop(&mut self) {
-        // FIXME: don't hard code, read from runtime
         let guard_pages = 1;
         let usable_pages = 32;
 
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
-        assert_eq!(page_size, 4096);
         let length = (guard_pages + usable_pages) * page_size;
 
         for stack_bottom in self.stack_pool.drain(..) {
-            let pointer = unsafe { stack_bottom.sub(length) } as *mut u8;
+            let pointer = unsafe { stack_bottom.0.sub(length) } as *mut u8;
             drop(stack::Stack { pointer, length })
         }
     }
 }
 
-struct Fibers(slab::Slab<FiberState>);
-
-impl Fibers {
-    fn new() -> Self {
-        Fibers(slab::Slab::new())
-    }
-
-    fn get(&self, fiber: FiberIndex) -> &FiberState {
-        &self.0[fiber.0 as usize]
-    }
-
-    fn get_mut(&mut self, fiber: FiberIndex) -> &mut FiberState {
-        &mut self.0[fiber.0 as usize]
-    }
-
-    fn add(
-        &mut self,
-        parent: Option<FiberIndex>,
-        stack_base: *const u8,
-        continuation: context_switch::Continuation,
-        is_contained: bool,
-    ) -> FiberIndex {
-        let index = self.0.insert(FiberState {
-            stack_base,
-            continuation,
-            is_completed: false,
-            join_handle: JoinHandleState::Unused,
-            syscall_result: None,
-            parent,
-            children: BTreeSet::new(),
-            is_cancelled: false,
-            is_contained,
-            issuing_syscall: false,
-        });
-        FiberIndex(index as u32)
-    }
-
-    fn remove(&mut self, fiber: FiberIndex) {
-        self.0.remove(fiber.0 as usize);
-    }
-
-    fn nearest_contained_ancestor(&self, fiber: FiberIndex) -> FiberIndex {
-        let mut nearest_contained_ancestor = fiber;
-        while !self.get(nearest_contained_ancestor).is_contained {
-            // Root fiber is contained
-            nearest_contained_ancestor = self.get(nearest_contained_ancestor).parent.unwrap();
-        }
-        nearest_contained_ancestor
-    }
-}
-
 /// ...
-/// max 4.3 billion...
+/// max 4.3 billion... (u32 takes up less space in FiberState)
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct FiberIndex(u32);
+struct FiberIndex(usize);
 
 #[derive(Debug)]
 struct FiberState {
-    stack_base: *const u8, // stack grows downwards
+    stack: StackBase,
     continuation: context_switch::Continuation,
-    is_completed: bool,
     join_handle: JoinHandleState,
-    syscall_result: Option<io::Result<u32>>,
     parent: Option<FiberIndex>,
-    children: BTreeSet<FiberIndex>, // 24B, hashmap is 48B
+    children: BTreeSet<FiberIndex>,
+    syscall_result: Option<i32>,
+    is_completed: bool,
     is_cancelled: bool,
-    is_contained: bool,
-    issuing_syscall: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum JoinHandleState {
     Unused,
-    Waiting(FiberIndex), // TODO: rename to Joining?
+    Waiting(Option<Waker>), // option for taking ownership from mutable reference
     Dropped,
 }
 
-/// ...
-/// TODO: add Send bound, to avoid handle troubles
-pub fn start<F: FnOnce() -> T, T>(f: F) -> thread::Result<T> {
-    unsafe {
-        exclusive_runtime(|| {
-            let stack_base = runtime().allocate_stack();
+/// Upper address of a fiber's stack memory, stack addresses grow downwards.
+/// The union of the user's closure and its output is stored at the top of the stack to save space in [FiberState].
+#[derive(Debug, Copy, Clone)]
+struct StackBase(*const u8);
 
-            let closure_pointer = (stack_base as *mut F).sub(1);
-            closure_pointer.write(f);
+impl StackBase {
+    unsafe fn union_ref<U>(&self) -> *const U {
+        (self.0 as *const U).sub(1)
+    }
 
-            let continuation = context_switch::prepare_stack(
-                stack_base.sub(closure_union_size::<F, T>()) as *mut u8,
-                start_trampoline::<F, T> as *const (),
-            );
+    unsafe fn union_mut<U>(&mut self) -> *mut U {
+        (self.0 as *mut U).sub(1)
+    }
 
-            let root_fiber = runtime().fibers.add(None, stack_base, continuation, true);
-            runtime().running_fiber = Some(root_fiber);
-
-            let bootstrap = runtime().bootstrap.as_mut_ptr();
-            context_switch::jump(continuation, bootstrap); // woken up by root fiber
-
-            let output_pointer = (stack_base as *const thread::Result<T>).sub(1);
-            output_pointer.read()
-        })
+    unsafe fn after_union<F, T>(&self) -> *mut u8 {
+        let union_size = std::cmp::max(mem::size_of::<F>(), mem::size_of::<T>());
+        self.0.sub(union_size) as *mut u8
     }
 }
 
-unsafe fn exclusive_runtime<T>(f: impl FnOnce() -> T) -> T {
-    RUNTIME.with(|tls| {
-        let runtime = &mut *tls.get();
-        assert!(runtime.is_none());
-        *runtime = Some(RuntimeState::new());
-    });
-
-    let output = f();
-
-    RUNTIME.with(|tls| {
-        let runtime = &mut *tls.get();
-        *runtime = None;
-    });
-
-    output
-}
-
-unsafe extern "C" fn start_trampoline<F: FnOnce() -> T, T>() -> ! {
-    let running = runtime().running();
-    let stack_base = runtime().fibers.get(running).stack_base;
-    let closure_pointer = (stack_base as *const F).sub(1);
-    let output_pointer = (stack_base as *mut thread::Result<T>).sub(1);
-
-    // Execute closure
-    let closure = closure_pointer.read();
-    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| (closure)()));
-    output_pointer.write(result);
-    runtime().fibers.get_mut(running).is_completed = true;
-
-    // Wait for children
-    if !runtime().fibers.get(running).children.is_empty() {
-        let to = runtime().process_io_and_wait();
-        let to = runtime().fibers.get(to).continuation;
-        let continuation = &mut runtime().fibers.get_mut(running).continuation;
-        context_switch::jump(to, continuation); // woken up by last child
-    }
-
-    // Deallocate stack
-    runtime().stack_pool.push(stack_base);
-    runtime().fibers.remove(running);
-
-    // Return to original thread
-    let to = runtime().bootstrap.assume_init();
-    let mut dummy = mem::MaybeUninit::uninit();
-    unsafe { context_switch::jump(to, dummy.as_mut_ptr()) };
-    unreachable!();
-}
-
-pub fn yield_now() {
-    ensure_runtime_exists();
-
-    unsafe {
-        runtime().process_io();
-
-        if runtime().ready_fibers.is_empty() {
-            return;
-        }
-
-        let (waker, waiter) = concurrency_pair();
-        waker.schedule();
-        waiter.park();
-    }
-}
-
-/// Spawns a new fiber, returning a [`JoinHandle`] for it.
+/// Spawns a new fiber, returning a [JoinHandle] for it.
 pub fn spawn<F: FnOnce() -> T + 'static, T: 'static>(f: F) -> JoinHandle<T> {
-    ensure_runtime_exists();
+    let child_fiber = tls::runtime(|runtime| {
+        let is_cancelled = runtime.running().is_cancelled;
+        let child_fiber = runtime.create_fiber(f, spawn_trampoline::<F, T>, is_cancelled);
+        runtime.ready_fibers.push_back(child_fiber);
+        // runtime.fibers[child_fiber.0].is_scheduled = true;
 
-    unsafe { spawn_inner(f, false) }
+        // parent child relationship
+        runtime.running().children.insert(child_fiber);
+        runtime.fibers[child_fiber.0].parent = Some(runtime.running_fiber.unwrap());
+
+        child_fiber
+    });
+
+    JoinHandle::new(child_fiber)
 }
 
-/// ...
-pub fn contain<F: FnOnce() -> T + 'static, T: 'static>(f: F) -> thread::Result<T> {
-    ensure_runtime_exists();
-
-    unsafe { spawn_inner(f, true) }.join()
-}
-
-unsafe fn spawn_inner<F: FnOnce() -> T + 'static, T: 'static>(
-    f: F,
-    is_contained: bool,
-) -> JoinHandle<T> {
-    let stack_base = runtime().allocate_stack();
-
-    let closure_pointer = (stack_base as *mut F).sub(1);
-    closure_pointer.write(f);
-
-    let continuation = context_switch::prepare_stack(
-        stack_base.sub(closure_union_size::<F, T>()) as *mut u8,
-        spawn_trampoline::<F, T> as *const (),
-    );
-
-    let parent = runtime().running();
-    let child = runtime()
-        .fibers
-        .add(Some(parent), stack_base, continuation, is_contained);
-    runtime().fibers.get_mut(parent).children.insert(child);
-    runtime().ready_fibers.push_back(child);
-
-    JoinHandle::new(child)
-}
-
-unsafe extern "C" fn spawn_trampoline<F: FnOnce() -> T, T>() -> ! {
-    let running = runtime().running();
-    let stack_base = runtime().fibers.get(running).stack_base;
-    let closure_pointer = (stack_base as *const F).sub(1);
-    let output_pointer = (stack_base as *mut thread::Result<T>).sub(1);
-
-    // Execute closure
-    let closure = closure_pointer.read();
+extern "C" fn spawn_trampoline<F: FnOnce() -> T, T>() -> ! {
+    // execute closure
+    let closure: F = tls::runtime(|rt| unsafe { rt.running().stack.union_ref::<F>().read() });
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| (closure)()));
-    let is_err = result.is_err();
-    output_pointer.write(result);
-    runtime().fibers.get_mut(running).is_completed = true;
+    hint::black_box(&result); // removing this causes a segfault in release mode
+    let result_is_error = result.is_err();
 
-    // Cancel nearest contained block
-    if is_err {
-        let nearest_contained_ancestor = runtime().fibers.nearest_contained_ancestor(running);
-        runtime().cancel(nearest_contained_ancestor);
+    tls::runtime(|runtime| {
+        let fiber = runtime.running();
+
+        fiber.is_completed = true;
+        fiber.is_cancelled = true; // prevent cancel scheduling while waiting for children
+        unsafe { fiber.stack.union_mut::<thread::Result<T>>().write(result) };
+    });
+
+    // wait for children
+    if tls::runtime(|rt| !rt.running().children.is_empty()) {
+        park(|_| {}); // woken up by last child
     }
 
-    // Wait for children
-    if !runtime().fibers.get(running).children.is_empty() {
-        let to = runtime().process_io_and_wait();
-        let to = runtime().fibers.get(to).continuation;
-        let continuation = &mut runtime().fibers.get_mut(running).continuation;
-        context_switch::jump(to, continuation); // woken up by last child
-    }
+    // schedule joining fiber
+    tls::runtime(|runtime| {
+        if let JoinHandleState::Waiting(waker) = &mut runtime.running().join_handle {
+            waker.take().unwrap().schedule_with(runtime);
+        } else if result_is_error {
+            let nearest_contained = runtime.nearest_contained(runtime.running_fiber.unwrap());
+            runtime.cancel(nearest_contained);
+        }
+    });
 
-    // Schedule joining fiber
-    if let JoinHandleState::Waiting(fiber) = runtime().fibers.get(running).join_handle {
-        runtime().ready_fibers.push_back(fiber);
-    }
+    // cleanup parent
+    tls::runtime(|runtime| {
+        let parent_index = runtime.running().parent.unwrap();
+        let parent = &mut runtime.fibers[parent_index.0];
 
-    // Handle parent
-    let parent = runtime().fibers.get(running).parent.unwrap();
-    runtime().fibers.get_mut(parent).children.remove(&running);
+        parent.children.remove(&runtime.running_fiber.unwrap());
 
-    if runtime().fibers.get(parent).is_completed && runtime().fibers.get(parent).children.is_empty()
-    {
-        runtime().ready_fibers.push_back(parent);
-    }
+        if parent.is_completed && parent.children.is_empty() {
+            Waker(parent_index).schedule_with(runtime);
+        }
+    });
 
-    // Deallocate stack
-    if let JoinHandleState::Dropped = runtime().fibers.get(running).join_handle {
-        let stack_base = runtime().fibers.get(running).stack_base;
-        runtime().stack_pool.push(stack_base);
-    }
+    // deallocate stack
+    tls::runtime(|runtime| {
+        if let JoinHandleState::Dropped = runtime.running().join_handle {
+            let stack = runtime.running().stack;
+            runtime.stack_pool.push(stack);
+            runtime.fibers.remove(runtime.running_fiber.unwrap().0);
+        }
+    });
 
-    // Continue to next fiber
-    let to = runtime().process_io_and_wait();
-    let to = runtime().fibers.get(to).continuation;
+    // continue to next fiber
     let mut dummy = mem::MaybeUninit::uninit();
-    unsafe { context_switch::jump(to, dummy.as_mut_ptr()) };
-    unreachable!();
+    let next = tls::runtime(|runtime| runtime.process_io());
+    unsafe { context_switch::jump(dummy.as_mut_ptr(), next) };
+    unreachable!()
 }
 
 /// ...
@@ -444,143 +312,201 @@ impl<T> JoinHandle<T> {
     }
 
     /// ...
-    pub fn join(self) -> thread::Result<T> {
-        ensure_runtime_exists();
-
-        unsafe {
-            let stack_base = runtime().fibers.get(self.fiber).stack_base;
-            let output_pointer = (stack_base as *const thread::Result<T>).sub(1);
-
-            // Already completed
-            if runtime().fibers.get(self.fiber).is_completed {
-                return output_pointer.read();
-            }
-
-            // Wait for completion
-            let running = runtime().running();
-
-            runtime().fibers.get_mut(self.fiber).join_handle = JoinHandleState::Waiting(running);
-
-            let to = runtime().process_io_and_wait();
-            let to = runtime().fibers.get(to).continuation;
-            let continuation = &mut runtime().fibers.get_mut(running).continuation;
-            context_switch::jump(to, continuation); // woken up by joined fiber
-
-            assert!(runtime().fibers.get(self.fiber).is_completed);
-            output_pointer.read()
+    /// if cancelled: returns if completes, waits only if waiting on an already cancelled fiber.
+    pub fn join(self) -> Result<T, crate::Error<Box<dyn Any + Send + 'static>>> {
+        if tls::runtime(|rt| rt.fibers[self.fiber.0].is_completed) {
+            return self.read_output();
         }
+
+        if is_cancelled() && !tls::runtime(|rt| rt.fibers[self.fiber.0].is_cancelled) {
+            return Err(crate::Error::Cancelled);
+        }
+
+        park(|waker| {
+            tls::runtime(|runtime| {
+                let fiber = &mut runtime.fibers[self.fiber.0];
+                assert!(!fiber.is_completed);
+                fiber.join_handle = JoinHandleState::Waiting(Some(waker));
+            });
+        }); // woken up by completion or cancellation
+
+        if tls::runtime(|rt| rt.fibers[self.fiber.0].is_completed) {
+            return self.read_output();
+        }
+
+        assert!(is_cancelled());
+        if !tls::runtime(|rt| rt.fibers[self.fiber.0].is_cancelled) {
+            return Err(crate::Error::Cancelled);
+        }
+        park(|_| {}); // woken up by completion
+
+        self.read_output()
+    }
+
+    fn read_output(self) -> Result<T, crate::Error<Box<dyn Any + Send>>> {
+        tls::runtime(|runtime| {
+            let fiber = &mut runtime.fibers[self.fiber.0];
+            let result = unsafe { fiber.stack.union_ref::<thread::Result<T>>().read() };
+            result.map_err(|e| crate::Error::Original(e))
+        })
     }
 
     /// ...
     pub fn cancel(&self) {
-        ensure_runtime_exists();
+        tls::runtime(|runtime| {
+            runtime.cancel(self.fiber);
+        })
+    }
 
-        unsafe {
-            runtime().cancel(self.fiber);
-        }
+    /// ...
+    pub fn cancel_propagating(&self) {
+        tls::runtime(|runtime| {
+            let nearest_contained = runtime.nearest_contained(self.fiber);
+            runtime.cancel(nearest_contained);
+        })
     }
 }
 
 impl<T> Drop for JoinHandle<T> {
     fn drop(&mut self) {
-        ensure_runtime_exists();
+        // deallocate stack
+        tls::runtime(|runtime| {
+            runtime.fibers[self.fiber.0].join_handle = JoinHandleState::Dropped;
 
-        unsafe {
-            runtime().fibers.get_mut(self.fiber).join_handle = JoinHandleState::Dropped;
-
-            // Deallocate stack
-            if runtime().fibers.get(self.fiber).is_completed {
-                let stack_base = runtime().fibers.get(self.fiber).stack_base;
-                runtime().stack_pool.push(stack_base);
-                runtime().fibers.remove(self.fiber);
+            if runtime.fibers[self.fiber.0].is_completed {
+                let stack = runtime.fibers[self.fiber.0].stack;
+                runtime.stack_pool.push(stack);
+                runtime.fibers.remove(self.fiber.0);
             }
+        });
+    }
+}
+
+/// ...
+pub fn park(schedule: impl FnOnce(Waker)) {
+    let running = tls::runtime(|runtime| runtime.running_fiber.unwrap());
+
+    let waker = Waker(running);
+    schedule(waker);
+
+    // continue to next fiber
+    let (running, next) = tls::runtime(|runtime| {
+        (
+            &mut runtime.running().continuation as *mut context_switch::Continuation,
+            runtime.process_io(),
+        )
+    });
+    unsafe { context_switch::jump(running, next) };
+}
+
+/// Handle for scheduling a parked fiber.
+#[repr(transparent)]
+#[derive(Debug)]
+pub struct Waker(FiberIndex);
+
+impl Waker {
+    /// Wake up the parked fiber to be run at some point.
+    pub fn schedule(self) {
+        tls::runtime(|runtime| {
+            self.schedule_with(runtime);
+        });
+    }
+
+    fn schedule_with(self, runtime: &mut RuntimeState) {
+        // if !runtime.fibers[self.0 .0].is_scheduled {
+        // FIXME: slow
+        if !runtime.ready_fibers.contains(&self.0) {
+            runtime.ready_fibers.push_back(self.0);
+            // runtime.fibers[self.0 .0].is_scheduled = true;
         }
     }
+
+    // Wake up the parked fiber to be run next.
+    // pub fn schedule_immediately(self) {}
 }
 
-// TODO: top-level cancel
+pub fn yield_now() {
+    // TODO: schedule_io, fast path, document speedup
 
-pub(crate) fn syscall(sqe: io_uring::squeue::Entry) -> io::Result<u32> {
-    ensure_runtime_exists();
-
-    unsafe {
-        let running = runtime().running();
-
-        assert!(!runtime().fibers.get(running).issuing_syscall);
-        runtime().fibers.get_mut(running).issuing_syscall = true;
-
-        assert!(runtime().fibers.get(running).syscall_result.is_none());
-        runtime()
-            .uring
-            .issue_syscall(uring::UserData(running.0 as u64), sqe); // TODO: uring::UserData::from(running)
-
-        let to = runtime().process_io_and_wait();
-
-        if running != to {
-            let to = runtime().fibers.get(to).continuation;
-            let continuation = &mut runtime().fibers.get_mut(running).continuation;
-            context_switch::jump(to, continuation); // woken up by event loop
-        }
-
-        assert!(runtime().fibers.get(running).issuing_syscall);
-        runtime().fibers.get_mut(running).issuing_syscall = false;
-
-        runtime()
-            .fibers
-            .get_mut(running)
-            .syscall_result
-            .take()
-            .unwrap()
-    }
-}
-
-pub fn nop() -> io::Result<()> {
-    let result = syscall(io_uring::opcode::Nop::new().build())?;
-    assert_eq!(result, 0);
-    Ok(())
-}
-
-const fn closure_union_size<F: FnOnce() -> T, T>() -> usize {
-    let closure_size = mem::size_of::<F>();
-    let output_size = mem::size_of::<T>();
-
-    if closure_size > output_size {
-        closure_size
-    } else {
-        output_size
-    }
+    park(|waker| waker.schedule());
 }
 
 /// ...
 pub fn cancel() {
-    ensure_runtime_exists();
+    tls::runtime(|runtime| {
+        runtime.cancel(runtime.running_fiber.unwrap());
+    })
+}
 
-    unsafe {
-        let running = runtime().running();
-        runtime().cancel(running);
-    }
+/// ...
+pub fn cancel_propagating() {
+    tls::runtime(|runtime| {
+        let nearest_contained = runtime.nearest_contained(runtime.running_fiber.unwrap());
+        runtime.cancel(nearest_contained);
+    })
 }
 
 /// ...
 pub fn is_cancelled() -> bool {
-    ensure_runtime_exists();
+    tls::runtime(|runtime| {
+        let fiber = runtime.running();
+        fiber.is_cancelled
+    })
+}
 
-    unsafe {
-        let running = runtime().running();
-        runtime().fibers.get(running).is_cancelled
+pub(crate) fn syscall(sqe: io_uring::squeue::Entry) -> crate::IoResult<u32> {
+    if is_cancelled() {
+        return Err(crate::Error::Cancelled);
+    }
+
+    let fiber_id = tls::runtime(|rt| rt.running_fiber.unwrap());
+    let user_data = uring::UserData(fiber_id.0 as u64);
+
+    tls::runtime(|runtime| {
+        let fiber = runtime.running();
+        assert!(fiber.syscall_result.is_none());
+
+        runtime.uring.issue_syscall(user_data, sqe);
+    });
+
+    park(|_| {}); // woken up by CQE or cancellation
+
+    if tls::runtime(|rt| rt.running().syscall_result.is_some()) {
+        return read_syscall_result();
+    }
+
+    assert!(is_cancelled());
+    tls::runtime(|rt| rt.uring.cancel_syscall(user_data));
+    park(|_| {}); // woken up by CQE
+
+    read_syscall_result()
+}
+
+fn read_syscall_result() -> crate::IoResult<u32> {
+    let result = tls::runtime(|rt| rt.running().syscall_result.take()).unwrap();
+
+    if result >= 0 {
+        Ok(result as u32)
+    } else {
+        if -result == libc::ECANCELED {
+            return Err(crate::Error::Cancelled);
+        }
+
+        let error = io::Error::from_raw_os_error(-result);
+        Err(crate::Error::Original(error))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::time;
-    use std::thread;
     use std::time::{Duration, Instant};
 
+    use super::*;
+
     mod start {
-        use super::*;
         use std::time::Duration;
+
+        use super::*;
 
         #[test]
         fn returns_output() {
@@ -591,7 +517,7 @@ mod tests {
 
         #[test]
         fn catches_panic() {
-            let result = start(|| panic!("oops"));
+            let result = start(|| panic!());
 
             assert!(result.is_err());
         }
@@ -606,23 +532,7 @@ mod tests {
         }
 
         #[test]
-        fn waits_for_children() {
-            static mut VALUE: usize = 0;
-
-            start(|| {
-                let handle = spawn(|| unsafe { VALUE += 1 });
-                drop(handle);
-
-                let handle = spawn(|| unsafe { VALUE += 1 });
-                mem::forget(handle);
-            })
-            .unwrap();
-
-            assert_eq!(unsafe { VALUE }, 2);
-        }
-
-        #[test]
-        fn works_consecutively() {
+        fn works_several_times() {
             start(|| {}).unwrap();
             start(|| {}).unwrap();
         }
@@ -630,69 +540,71 @@ mod tests {
         #[test]
         fn works_in_parallel() {
             let handle = thread::spawn(|| {
-                start(|| {
-                    thread::sleep(Duration::from_millis(2));
-                })
-                .unwrap();
+                start(|| thread::sleep(Duration::from_millis(2))).unwrap();
             });
 
-            thread::sleep(Duration::from_millis(1));
-            start(|| {}).unwrap();
-
-            assert!(handle.join().is_ok());
-        }
-    }
-
-    mod contain {
-        use super::*;
-
-        #[test]
-        fn returns_output() {
             start(|| {
-                let output = contain(|| 123);
-
-                assert_eq!(output.unwrap(), 123);
+                thread::sleep(Duration::from_millis(1));
             })
             .unwrap();
+
+            handle.join().unwrap();
         }
 
         #[test]
-        fn catches_panic() {
-            start(|| {
-                let result = contain(|| panic!("oops"));
+        fn waits_for_dropped_child() {
+            let before = Instant::now();
 
-                assert!(result.is_err());
+            start(|| {
+                let handle = spawn(|| crate::time::sleep(Duration::from_millis(5)));
+                drop(handle);
             })
             .unwrap();
+
+            assert!(before.elapsed() > Duration::from_millis(5));
         }
 
         #[test]
-        fn cant_nest_start() {
-            start(|| {
-                let result = contain(|| start(|| {}).unwrap());
+        fn waits_for_forgotten_child() {
+            let before = Instant::now();
 
-                assert!(result.is_err());
+            start(|| {
+                let handle = spawn(|| crate::time::sleep(Duration::from_millis(5)));
+                mem::forget(handle);
             })
             .unwrap();
+
+            assert!(before.elapsed() > Duration::from_millis(5));
         }
 
         #[test]
-        fn waits_for_children() {
-            start(|| {
-                static mut VALUE: usize = 0;
+        #[ignore]
+        fn cleans_up_after_itself() {
+            // enough to hit OS limits
+            for _ in 0..1_000_000 {
+                start(|| {}).unwrap();
+            }
+        }
 
-                contain(|| {
-                    let handle = spawn(|| unsafe { VALUE += 1 });
-                    drop(handle);
+        mod cancellation {
+            use super::*;
 
-                    let handle = spawn(|| unsafe { VALUE += 1 });
-                    mem::forget(handle);
+            #[test]
+            fn initially_not_cancelled() {
+                start(|| {
+                    assert!(!is_cancelled());
                 })
                 .unwrap();
+            }
 
-                assert_eq!(unsafe { VALUE }, 2);
-            })
-            .unwrap();
+            #[test]
+            fn cancelled_after_cancelling_self() {
+                start(|| {
+                    cancel();
+                    assert!(is_cancelled());
+                })
+                .unwrap();
+            }
         }
     }
 
@@ -730,6 +642,7 @@ mod tests {
                 let handle = spawn(|| 123);
 
                 yield_now();
+                // TODO: assert!(handle.is_completed());
                 let output = handle.join();
 
                 assert_eq!(output.unwrap(), 123);
@@ -740,7 +653,7 @@ mod tests {
         #[test]
         fn catches_panic() {
             start(|| {
-                let result = spawn(|| panic!("oops")).join();
+                let result = spawn(|| panic!()).join();
 
                 assert!(result.is_err());
             })
@@ -748,37 +661,320 @@ mod tests {
         }
 
         #[test]
-        fn cant_nest_start() {
+        fn waits_for_dropped_child() {
             start(|| {
-                let result = spawn(|| start(|| {})).join();
+                let handle = spawn(|| {
+                    let handle = spawn(|| crate::time::sleep(Duration::from_millis(5)));
+                    drop(handle);
+                });
 
-                assert!(result.is_err());
+                let before = Instant::now();
+                handle.join().unwrap();
+
+                assert!(before.elapsed() > Duration::from_millis(5));
             })
             .unwrap();
         }
 
         #[test]
-        fn waits_for_children() {
+        fn waits_for_forgotten_child() {
             start(|| {
-                static mut VALUE: usize = 0;
+                let handle = spawn(|| {
+                    let handle = spawn(|| crate::time::sleep(Duration::from_millis(5)));
+                    mem::forget(handle);
+                });
 
-                spawn(|| {
-                    let handle = spawn(|| unsafe { VALUE += 1 });
+                let before = Instant::now();
+                handle.join().unwrap();
+
+                assert!(before.elapsed() > Duration::from_millis(5));
+            })
+            .unwrap();
+        }
+
+        #[test]
+        #[ignore]
+        fn joined_child_reuses_stack() {
+            start(|| {
+                // enough to hit OS limits
+                for _ in 0..1_000_000 {
+                    spawn(|| {}).join().unwrap();
+                }
+            })
+            .unwrap();
+        }
+
+        #[test]
+        #[ignore]
+        fn dropped_child_reuses_stack() {
+            start(|| {
+                // enough to hit OS limits
+                for _ in 0..1_000_000 {
+                    let handle = spawn(|| {});
+                    drop(handle);
+                    yield_now();
+                }
+            })
+            .unwrap();
+        }
+
+        #[test]
+        #[should_panic]
+        #[ignore]
+        fn forgotten_child_cant_reuse_stack() {
+            start(|| {
+                // enough to hit OS limits
+                for _ in 0..1_000_000 {
+                    let handle = spawn(|| {});
+                    mem::forget(handle); // memory leak
+                    yield_now();
+                }
+            })
+            .unwrap();
+        }
+
+        #[test]
+        #[ignore]
+        fn joined_child_cleans_up_after_itself() {
+            // enough to hit OS limits
+            for _ in 0..1_000_000 {
+                start(|| {
+                    spawn(|| {}).join().unwrap();
+                })
+                .unwrap();
+            }
+        }
+
+        #[test]
+        #[ignore]
+        fn dropped_child_cleans_up_after_itself() {
+            // enough to hit OS limits
+            for _ in 0..1_000_000 {
+                start(|| {
+                    let handle = spawn(|| {});
+                    drop(handle);
+                })
+                .unwrap();
+            }
+        }
+
+        #[test]
+        #[should_panic]
+        #[ignore]
+        fn forgotten_child_cant_clean_up_after_itself() {
+            // enough to hit OS limits
+            for _ in 0..1_000_000 {
+                start(|| {
+                    let handle = spawn(|| {});
+                    mem::forget(handle); // memory leak
+                })
+                .unwrap();
+            }
+        }
+
+        mod cancellation {
+            use super::*;
+
+            #[test]
+            fn child_initially_not_cancelled() {
+                start(|| {
+                    let handle = spawn(|| assert!(!is_cancelled()));
+
+                    handle.join().unwrap();
+                })
+                .unwrap();
+            }
+
+            #[test]
+            fn child_starts_cancelled_if_parent_cancelled() {
+                start(|| {
+                    cancel();
+
+                    let handle = spawn(|| assert!(is_cancelled()));
+
+                    handle.join().unwrap();
+                })
+                .unwrap();
+            }
+
+            #[test]
+            fn child_cancelled_after_cancelling_self() {
+                start(|| {
+                    let handle = spawn(|| {
+                        cancel();
+                        assert!(is_cancelled());
+                    });
+
+                    handle.join().unwrap();
+                    assert!(!is_cancelled());
+                })
+                .unwrap();
+            }
+
+            #[test]
+            fn parent_propagates_cancel_to_children() {
+                start(|| {
+                    let handle = spawn(|| assert!(is_cancelled()));
+
+                    cancel();
+
+                    handle.join().unwrap();
+                })
+                .unwrap();
+            }
+
+            #[test]
+            fn child_cancelled_after_cancelling_handle() {
+                start(|| {
+                    let handle = spawn(|| assert!(is_cancelled()));
+
+                    handle.cancel();
+
+                    handle.join().unwrap();
+                    assert!(!is_cancelled());
+                })
+                .unwrap();
+            }
+
+            #[test]
+            fn cancelled_after_child_cancel_propagating_self() {
+                start(|| {
+                    let handle = spawn(|| {
+                        cancel_propagating();
+                        assert!(is_cancelled());
+                    });
+
+                    handle.join().unwrap();
+                    assert!(is_cancelled());
+                })
+                .unwrap();
+            }
+
+            #[test]
+            fn cancelled_after_cancel_propagating_handle() {
+                start(|| {
+                    let handle = spawn(|| assert!(is_cancelled()));
+
+                    handle.cancel_propagating();
+
+                    handle.join().unwrap();
+                    assert!(is_cancelled());
+                })
+                .unwrap();
+            }
+
+            #[test]
+            fn not_cancelled_after_joined_child_panic() {
+                start(|| {
+                    let handle = spawn(|| panic!());
+
+                    let _ = handle.join();
+
+                    assert!(!is_cancelled());
+                })
+                .unwrap();
+            }
+
+            #[test]
+            fn cancelled_after_dropped_child_panic() {
+                start(|| {
+                    let handle = spawn(|| panic!());
                     drop(handle);
 
-                    let handle = spawn(|| unsafe { VALUE += 1 });
-                    mem::forget(handle);
-                })
-                .join()
-                .unwrap();
+                    yield_now();
 
-                assert_eq!(unsafe { VALUE }, 2);
-            })
-            .unwrap();
+                    assert!(is_cancelled());
+                })
+                .unwrap();
+            }
+
+            #[test]
+            fn cancelled_after_forgotten_child_panic() {
+                start(|| {
+                    let handle = spawn(|| panic!());
+                    mem::forget(handle);
+
+                    yield_now();
+
+                    assert!(is_cancelled());
+                })
+                .unwrap();
+            }
+        }
+
+        mod syscall {
+            use super::*;
+
+            #[test]
+            fn executes_syscalls_in_start() {
+                start(|| {
+                    nop().unwrap();
+                    nop().unwrap();
+                })
+                .unwrap();
+            }
+
+            #[test]
+            fn executes_syscalls_in_spawn() {
+                start(|| {
+                    spawn(|| {
+                        nop().unwrap();
+                        nop().unwrap();
+                    })
+                    .join()
+                    .unwrap();
+                })
+                .unwrap();
+            }
+
+            fn nop() -> crate::CancellableResult<()> {
+                let sqe = io_uring::opcode::Nop::new().build();
+                let result = syscall(sqe).map_err(|cancellable| cancellable.map(|_| ()))?;
+                assert_eq!(result, 0);
+
+                Ok(())
+            }
+
+            mod cancellation {
+                use super::*;
+
+                #[test]
+                fn tries_to_stop_active_syscall() {
+                    start(|| {
+                        let handle = spawn(|| crate::time::sleep(Duration::from_millis(5)));
+                        yield_now();
+
+                        handle.cancel();
+                        let before = Instant::now();
+                        let result = handle.join().unwrap();
+
+                        assert_eq!(result, Err(crate::Error::Cancelled));
+                        assert!(before.elapsed() < Duration::from_millis(5));
+                    })
+                    .unwrap();
+                }
+
+                #[test]
+                fn immediately_fails_new_syscall() {
+                    start(|| {
+                        cancel();
+
+                        let before = Instant::now();
+                        let result = crate::time::sleep(Duration::from_millis(5));
+
+                        assert_eq!(result, Err(crate::Error::Cancelled));
+                        assert!(before.elapsed() < Duration::from_millis(5));
+                    })
+                    .unwrap();
+                }
+            }
         }
     }
 
     mod yield_now {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
         use super::*;
 
         #[test]
@@ -792,148 +988,19 @@ mod tests {
         #[test]
         fn to_other_fiber() {
             start(|| {
-                static mut VALUE: usize = 0;
+                let changed = Rc::new(RefCell::new(false));
 
-                spawn(|| unsafe { VALUE += 1 });
-                assert_eq!(unsafe { VALUE }, 0);
+                spawn({
+                    let changed = changed.clone();
+                    move || *changed.borrow_mut() = true
+                });
 
+                assert!(!*changed.borrow());
                 yield_now();
 
-                assert_eq!(unsafe { VALUE }, 1);
+                assert!(*changed.borrow());
             })
             .unwrap();
         }
     }
-
-    mod cancellation {
-        use super::*;
-
-        #[test]
-        fn initially_not_cancelled() {
-            start(|| {
-                assert!(!is_cancelled());
-            })
-            .unwrap();
-        }
-
-        #[test]
-        fn function_cancels_fiber_hierarchy() {
-            start(|| {
-                contain(|| {
-                    // Propagates to children
-                    let handle = spawn(|| {
-                        assert!(is_cancelled());
-                    });
-
-                    cancel();
-                    handle.join().unwrap();
-                    // TODO: consider cancel_propagating
-                    assert!(is_cancelled());
-                })
-                .unwrap();
-
-                // Stops at contain block
-                assert!(!is_cancelled());
-            })
-            .unwrap();
-        }
-
-        #[test]
-        fn panic_cancels_fiber_hierarchy() {
-            static mut GRAND_CHILD_CANCELLED: bool = false;
-
-            start(|| {
-                let _ = contain(|| {
-                    let handle = spawn(|| {
-                        // Propagates to children
-                        spawn(|| unsafe {
-                            dbg!(is_cancelled());
-                            GRAND_CHILD_CANCELLED = is_cancelled();
-                        });
-
-                        panic!("oops");
-                    });
-
-                    handle.join().unwrap();
-                    assert!(is_cancelled());
-                });
-
-                assert!(unsafe { GRAND_CHILD_CANCELLED });
-
-                // Stops at contain block
-                assert!(!is_cancelled());
-            })
-            .unwrap();
-        }
-
-        #[test]
-        fn method_cancels_fiber_hierarchy() {
-            start(|| {
-                let handle = spawn(|| {
-                    // Propagates to children
-                    spawn(|| {
-                        assert!(is_cancelled());
-                    });
-
-                    yield_now();
-                    assert!(is_cancelled());
-                });
-
-                yield_now();
-                handle.cancel();
-                handle.join().unwrap();
-
-                // TODO: consider handle.cancel_propagating()
-                // TODO: consider handle.is_cancelled, is_finished
-
-                // Doesn't propagate to parents
-                assert!(!is_cancelled());
-            })
-            .unwrap();
-        }
-    }
-
-    // TODO: allow spawning tasks when cancelled, but they start off as cancelled
-
-    // #[test]
-    // fn cancels_syscall_with_global_cancel() {
-    //     start(|| {
-    //         let before = Instant::now();
-    //         let handle = spawn(|| {
-    //             let result = time::sleep(Duration::from_millis(5));
-    //             assert!(result.is_err());
-    //         });
-    //
-    //         yield_now();
-    //         cancel();
-    //         handle.join().unwrap();
-    //
-    //         assert!(before.elapsed() < Duration::from_millis(5));
-    //     });
-    // }
-    //
-    // #[test]
-    // fn cancels_syscall_with_handle_cancel() {
-    //     start(|| {
-    //         let before = Instant::now();
-    //         let handle = spawn(|| {
-    //             let result = time::sleep(Duration::from_millis(5));
-    //             assert!(result.is_err());
-    //         });
-    //
-    //         yield_now();
-    //         handle.cancel();
-    //         handle.join().unwrap();
-    //
-    //         assert!(before.elapsed() < Duration::from_millis(5));
-    //     });
-    // }
-    // FIXME: can I issue an async cancellation (sits in sq), but syscall completes normally, fibers exits,
-    //  new fiber starts with same id and issues syscall (sits in same sq), it gets cancelled :/
-    //  it's an issue because io_uring executes the SQEs out of order...
-    //  solution: syscall either waits for cancellation cq (if it's been cancelled), or use generational slotmap (prefer this)
-
-    // TODO: fail to spawn if cancelled
-    // TODO: fail to syscall if cancelled
-    // TODO: still do best effort syscalls in drop for close!
 }

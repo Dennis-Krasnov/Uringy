@@ -18,7 +18,6 @@ impl Stack {
 
         // page aligned sizes
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
-        assert_eq!(page_size, 4096);
         let length = (guard_pages + usable_pages) * page_size;
 
         // kernel allocates an unused block of virtual memory
@@ -74,9 +73,8 @@ mod tests {
     #[test]
     fn reads_and_writes() {
         let stack = Stack::new(NonZeroUsize::MIN, NonZeroUsize::MIN).unwrap();
-        let pointer = stack.base() as *mut u8;
         unsafe {
-            let pointer = pointer.sub(1);
+            let pointer = stack.base().sub(1);
             pointer.write(123);
             assert_eq!(pointer.read(), 123);
         }
@@ -87,14 +85,14 @@ mod tests {
         // TODO
     }
 
-    #[test]
-    #[ignore = "aborts process"] // TODO: test with fork()
-    fn overflow() {
-        let stack = Stack::new(NonZeroUsize::MIN, NonZeroUsize::MIN).unwrap();
-        let pointer = stack.base() as *mut u8;
-        unsafe {
-            let pointer = pointer.sub(4096 + 1);
-            pointer.write(123);
-        }
-    }
+    // #[test]
+    // #[ignore = "aborts process"] // TODO: test with fork()
+    // fn overflow() {
+    //     let stack = Stack::new(NonZeroUsize::MIN, NonZeroUsize::MIN).unwrap();
+    //     let pointer = stack.base() as *mut u8;
+    //     unsafe {
+    //         let pointer = pointer.sub(4096 + 1);
+    //         pointer.write(123);
+    //     }
+    // }
 }

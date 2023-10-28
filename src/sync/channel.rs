@@ -1,9 +1,11 @@
-//! ...
+//! ... can't block when cancelled: can read if not empty, can send if not full.
 
-use crate::runtime;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
+
+use crate::runtime;
+use crate::runtime::is_cancelled;
 
 pub fn unbounded<T>() -> (Sender<T>, Receiver<T>) {
     let state = Rc::new(RefCell::new(ChannelState {
@@ -27,43 +29,45 @@ pub struct Sender<T>(Rc<SenderState<T>>);
 
 impl<T> Sender<T> {
     /// ...
-    pub fn send(&self, data: T) -> Option<()> {
-        // TODO: Result<(), Cancelled(if bounded)/Closed>
+    pub fn send(&self, data: T) -> Result<(), crate::Error<ClosedError>> {
         let mut state = self.0.state.borrow_mut();
 
         if state.is_closed {
-            return None;
+            println!("recv: closed");
+            return Err(crate::Error::Original(ClosedError));
         }
 
         state.queue.push_back(data);
 
         if let Some(waker) = state.no_longer_empty.pop_front() {
-            unsafe {
-                waker.schedule();
-            }
+            println!("sender send woke {waker:?}");
+            waker.schedule();
         }
 
-        Some(())
+        Ok(())
     }
 
     /// ...
+    #[inline]
     pub fn len(&self) -> usize {
         let state = self.0.state.borrow();
         state.queue.len()
     }
 
     /// ...
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     /// ...
+    #[inline]
     pub fn close(&self) {
-        let mut state = self.0.state.borrow_mut();
-        state.is_closed = true;
+        self.0.close();
     }
 
     /// ...
+    #[inline]
     pub fn is_closed(&self) -> bool {
         let state = self.0.state.borrow();
         state.is_closed
@@ -75,10 +79,21 @@ struct SenderState<T> {
     state: Rc<RefCell<ChannelState<T>>>,
 }
 
-impl<T> Drop for SenderState<T> {
-    fn drop(&mut self) {
+impl<T> SenderState<T> {
+    fn close(&self) {
         let mut state = self.state.borrow_mut();
         state.is_closed = true;
+
+        for waker in state.no_longer_empty.drain(..) {
+            println!("sender close woke {waker:?}");
+            waker.schedule();
+        }
+    }
+}
+
+impl<T> Drop for SenderState<T> {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 
@@ -88,47 +103,54 @@ pub struct Receiver<T>(Rc<ReceiverState<T>>);
 
 impl<T> Receiver<T> {
     /// ...
-    pub fn recv(&self) -> Option<T> {
-        // TODO: Result<(), Cancelled/Closed>
-
+    pub fn recv(&self) -> Result<T, crate::Error<ClosedError>> {
         loop {
             let mut state = self.0.state.borrow_mut();
 
             if let Some(message) = state.queue.pop_front() {
-                break Some(message);
+                println!("recv: value");
+                break Ok(message);
             }
 
             if state.is_closed {
-                break None;
+                println!("recv: closed");
+                break Err(crate::Error::Original(ClosedError));
             }
 
-            unsafe {
-                let (waker, waiter) = runtime::concurrency_pair();
-                state.no_longer_empty.push_back(waker);
-                drop(state); // give up mutable borrow during context switch
-                waiter.park();
+            if is_cancelled() {
+                println!("recv: cancelled");
+                return Err(crate::Error::Cancelled);
             }
+
+            runtime::park(|waker| {
+                state.no_longer_empty.push_back(waker);
+                drop(state);
+            }); // woken up by sender or cancellation
         }
     }
 
     /// ...
+    #[inline]
     pub fn len(&self) -> usize {
         let state = self.0.state.borrow();
         state.queue.len()
     }
 
     /// ...
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     /// ...
+    #[inline]
     pub fn close(&self) {
         let mut state = self.0.state.borrow_mut();
         state.is_closed = true;
     }
 
     /// ...
+    #[inline]
     pub fn is_closed(&self) -> bool {
         let state = self.0.state.borrow();
         state.is_closed
@@ -139,7 +161,7 @@ impl<T> Iterator for Receiver<T> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.recv()
+        self.recv().ok()
     }
 }
 
@@ -162,66 +184,132 @@ struct ChannelState<T> {
     is_closed: bool,
 }
 
+/// ...
+#[derive(Debug, PartialEq)]
+pub struct ClosedError;
+
 #[cfg(test)]
 mod tests {
+    use runtime::{spawn, start};
+
+    use crate::runtime::cancel;
+
     use super::*;
-    use crate::runtime;
 
     #[test]
     fn send_then_receive() {
-        runtime::start(|| {
+        start(|| {
             let (tx, rx) = unbounded();
 
             tx.send(1).unwrap();
             tx.send(2).unwrap();
             tx.send(3).unwrap();
 
-            assert_eq!(rx.recv(), Some(1));
-            assert_eq!(rx.recv(), Some(2));
-            assert_eq!(rx.recv(), Some(3));
+            assert_eq!(rx.recv(), Ok(1));
+            assert_eq!(rx.recv(), Ok(2));
+            assert_eq!(rx.recv(), Ok(3));
         })
+        .unwrap();
     }
 
     #[test]
     fn receive_then_send() {
-        runtime::start(|| {
+        start(|| {
             let (tx, rx) = unbounded();
 
-            runtime::spawn(move || {
+            spawn(move || {
                 tx.send(1).unwrap();
             });
 
-            assert_eq!(rx.recv(), Some(1));
-            assert_eq!(rx.recv(), None);
+            assert_eq!(rx.recv(), Ok(1));
+            assert_eq!(rx.recv(), Err(crate::Error::Original(ClosedError)));
         })
+        .unwrap();
     }
 
     #[test]
-    fn iterates_send_then_receive() {
-        runtime::start(|| {
-            let (tx, mut rx) = unbounded();
+    fn sender_close_stops_recv() {
+        start(|| {
+            let (tx, rx) = unbounded::<()>();
+            let handle = spawn(move || rx.recv());
 
+            tx.close();
+            let result = handle.join().unwrap();
+
+            assert_eq!(result, Err(crate::Error::Original(ClosedError)));
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn sender_drop_stops_recv() {
+        start(|| {
+            let (tx, rx) = unbounded::<()>();
+            let handle = spawn(move || rx.recv());
+
+            drop(tx);
+            let result = handle.join().unwrap();
+
+            assert_eq!(result, Err(crate::Error::Original(ClosedError)));
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn compatible_with_iterator() {
+        start(|| {
+            let (tx, rx) = unbounded();
             tx.send(1).unwrap();
             tx.send(2).unwrap();
             tx.send(3).unwrap();
+            drop(tx);
 
-            assert_eq!(rx.next(), Some(1));
-            assert_eq!(rx.next(), Some(2));
-            assert_eq!(rx.next(), Some(3));
+            let collected: Vec<_> = rx.into_iter().collect();
+
+            assert_eq!(collected, vec![1, 2, 3]);
         })
+        .unwrap();
     }
 
-    #[test]
-    fn iterates_receive_then_send() {
-        runtime::start(|| {
-            let (tx, mut rx) = unbounded();
+    mod cancellation {
+        use super::*;
 
-            runtime::spawn(move || {
+        #[test]
+        fn can_always_send_to_unbounded_channel() {
+            start(|| {
+                let (tx, _rx) = unbounded();
+                cancel();
+
+                assert!(tx.send(()).is_ok());
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn stops_active_recv() {
+            start(|| {
+                let (_tx, rx) = unbounded::<()>();
+                let handle = spawn(move || rx.recv());
+
+                handle.cancel();
+                let result = handle.join().unwrap();
+
+                assert_eq!(result, Err(crate::Error::Cancelled));
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn fails_blocking_recv() {
+            start(|| {
+                let (tx, rx) = unbounded();
                 tx.send(1).unwrap();
-            });
+                cancel();
 
-            assert_eq!(rx.next(), Some(1));
-            assert_eq!(rx.next(), None);
-        })
+                assert_eq!(rx.recv(), Ok(1));
+                assert_eq!(rx.recv(), Err(crate::Error::Cancelled));
+            })
+            .unwrap();
+        }
     }
 }

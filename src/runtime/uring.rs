@@ -1,6 +1,5 @@
 //! Non-blocking syscall interface that supports cancellation.
 
-use std::io;
 #[cfg(not(target_os = "linux"))]
 compile_error!("Uringy only supports Linux");
 
@@ -25,11 +24,11 @@ impl Uring {
     /// ...
     pub(super) fn wait_for_completed_syscall(&mut self) {
         self.io_uring.submit_and_wait(1).unwrap();
-        // TODO: retry on EINTR
+        // TODO: retry on EINTR (interrupted)
     }
 
     /// ...
-    pub(super) fn process_cq(&mut self) -> Vec<(UserData, io::Result<u32>)> {
+    pub(super) fn process_cq(&mut self) -> Vec<(UserData, i32)> {
         let mut results = vec![]; // TODO: return iterator (to avoid allocating) that mutably borrows io_uring by holding cq
 
         for cqe in self.io_uring.completion() {
@@ -39,25 +38,19 @@ impl Uring {
 
             let user_data = UserData(cqe.user_data());
 
-            let result = if cqe.result() >= 0 {
-                Ok(cqe.result() as u32)
-            } else {
-                Err(io::Error::from_raw_os_error(-cqe.result()))
-            };
-
             // TODO: also process flags in match:
             // Storing the selected buffer ID, if one was selected. See BUFFER_SELECT for more info.
             // whether oneshot accepts needs to resubscribe (convert to yet another io::error)
 
-            results.push((user_data, result));
+            results.push((user_data, cqe.result()));
         }
 
         results
     }
 
     /// ...
-    pub(super) fn cancel_syscall(&mut self, user_data: UserData) {
-        let sqe = io_uring::opcode::AsyncCancel::new(user_data.0).build();
+    pub(super) fn cancel_syscall(&mut self, target: UserData) {
+        let sqe = io_uring::opcode::AsyncCancel::new(target.0).build();
         self.issue_syscall(ASYNC_CANCELLATION, sqe);
     }
 
@@ -69,16 +62,13 @@ impl Uring {
         let mut sq = self.io_uring.submission();
         while sq.is_full() {
             drop(sq); // avoid borrowing io_uring more than once
+                      // TODO: process CQs as well (same syscall)
             dbg!(self.io_uring.submit().unwrap()); // TODO: remove debug after ensuring this works
             sq = self.io_uring.submission();
         }
         unsafe { sq.push(&sqe).unwrap() }; // safety: submission queue isn't full
     }
 }
-
-// TODO: compatibility mode (optional mio dependency)
-// #[cfg(any(target_os = "macos", target_os = "windows"))]
-// pub(super) struct Uring;
 
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
