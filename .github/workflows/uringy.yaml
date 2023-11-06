@@ -19,7 +19,7 @@ jobs:
           key: unit-test
 
       - name: Unit test
-        run: cargo test
+        run: cargo test --features http
 
   build_timings:
     runs-on: ubuntu-latest
