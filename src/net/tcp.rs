@@ -138,7 +138,9 @@ impl Listener {
         let fd = io_uring::types::Fd(self.0);
         let mut socket = mem::MaybeUninit::uninit();
         let mut length = mem::size_of_val(&socket) as libc::socklen_t;
-        let sqe = io_uring::opcode::Accept::new(fd, socket.as_mut_ptr(), &mut length).build();
+        let sqe = io_uring::opcode::Accept::new(fd, socket.as_mut_ptr(), &mut length)
+            .flags(libc::SOCK_CLOEXEC)
+            .build();
         let fd = runtime::syscall(sqe)?;
 
         let stream = Stream(RawFd::from(fd as i32));
