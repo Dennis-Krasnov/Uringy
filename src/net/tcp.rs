@@ -1,6 +1,6 @@
 //! ...
 
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 use std::{io, mem};
 
@@ -136,15 +136,15 @@ impl Listener {
     /// ...
     pub fn accept(&self) -> crate::IoResult<(Stream, SocketAddr)> {
         let fd = io_uring::types::Fd(self.0);
-        let mut socket = mem::MaybeUninit::uninit();
-        let mut length = mem::size_of_val(&socket) as libc::socklen_t;
-        let sqe = io_uring::opcode::Accept::new(fd, socket.as_mut_ptr(), &mut length)
+        let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
+        let mut length = mem::size_of_val(&storage) as libc::socklen_t;
+        let sqe = io_uring::opcode::Accept::new(fd, &mut storage as *mut _ as *mut _, &mut length)
             .flags(libc::SOCK_CLOEXEC)
             .build();
         let fd = runtime::syscall(sqe)?;
-
         let stream = Stream(RawFd::from(fd as i32));
-        let addr = stream.peer_addr()?;
+        let addr = sockaddr_to_addr(&storage, length as usize)?;
+
         Ok((stream, addr))
     }
 
@@ -182,6 +182,35 @@ impl Drop for Listener {
         let fd = io_uring::types::Fd(self.0);
         let sqe = io_uring::opcode::Close::new(fd).build();
         let _ = runtime::syscall(sqe);
+    }
+}
+
+fn sockaddr_to_addr(storage: &libc::sockaddr_storage, length: usize) -> io::Result<SocketAddr> {
+    match storage.ss_family as libc::c_int {
+        libc::AF_INET => {
+            assert!(length >= mem::size_of::<libc::sockaddr_in>());
+            let addr = unsafe { *(storage as *const _ as *const libc::sockaddr_in) };
+
+            Ok(SocketAddr::V4(SocketAddrV4::new(
+                Ipv4Addr::from(addr.sin_addr.s_addr.to_ne_bytes()),
+                u16::from_be(addr.sin_port),
+            )))
+        }
+        libc::AF_INET6 => {
+            assert!(length >= mem::size_of::<libc::sockaddr_in6>());
+            let addr = unsafe { *(storage as *const _ as *const libc::sockaddr_in6) };
+
+            Ok(SocketAddr::V6(SocketAddrV6::new(
+                Ipv6Addr::from(addr.sin6_addr.s6_addr),
+                u16::from_be(addr.sin6_port),
+                addr.sin6_flowinfo,
+                addr.sin6_scope_id,
+            )))
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid argument",
+        )),
     }
 }
 
