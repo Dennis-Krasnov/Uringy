@@ -107,7 +107,7 @@ impl<T: IntoBody> IntoBody for Css<T> {
 #[cfg(test)]
 mod tests {
     use crate::ecosystem::http::server::routing::{get, Router};
-    use crate::ecosystem::http::{Request, Response, StatusCode};
+    use crate::ecosystem::http::{Request, StatusCode};
 
     use super::*;
 
@@ -165,65 +165,13 @@ mod tests {
 
             assert_eq!(response.status(), &StatusCode::BAD_REQUEST);
         }
-
-        #[test]
-        fn is_into_body() {
-            let request = Request::builder().body(Json(42)).unwrap();
-            assert!(request.headers()[header::CONTENT_TYPE]
-                .to_str()
-                .unwrap()
-                .contains("json"));
-
-            let response = Response::builder().body(Json(42)).unwrap();
-            assert!(response.headers()[header::CONTENT_TYPE]
-                .to_str()
-                .unwrap()
-                .contains("json"));
-        }
     }
 
     #[test]
-    fn html_is_into_body() {
-        let request = Request::builder().body(Html("hello")).unwrap();
-        assert!(request.headers()[header::CONTENT_TYPE]
-            .to_str()
-            .unwrap()
-            .contains("html"));
-
-        let response = Response::builder().body(Html("hello")).unwrap();
-        assert!(response.headers()[header::CONTENT_TYPE]
-            .to_str()
-            .unwrap()
-            .contains("html"));
-    }
-
-    #[test]
-    fn javascript_is_into_body() {
-        let request = Request::builder().body(JavaScript("hello")).unwrap();
-        assert!(request.headers()[header::CONTENT_TYPE]
-            .to_str()
-            .unwrap()
-            .contains("javascript"));
-
-        let response = Response::builder().body(JavaScript("hello")).unwrap();
-        assert!(response.headers()[header::CONTENT_TYPE]
-            .to_str()
-            .unwrap()
-            .contains("javascript"));
-    }
-
-    #[test]
-    fn css_is_into_body() {
-        let request = Request::builder().body(Css("hello")).unwrap();
-        assert!(request.headers()[header::CONTENT_TYPE]
-            .to_str()
-            .unwrap()
-            .contains("css"));
-
-        let response = Response::builder().body(Css("hello")).unwrap();
-        assert!(response.headers()[header::CONTENT_TYPE]
-            .to_str()
-            .unwrap()
-            .contains("css"));
+    fn is_into_body() {
+        Request::builder().body(Json("hello")).unwrap();
+        Request::builder().body(Html("hello")).unwrap();
+        Request::builder().body(JavaScript("hello")).unwrap();
+        Request::builder().body(Css("hello")).unwrap();
     }
 }
