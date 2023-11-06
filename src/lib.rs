@@ -8,7 +8,6 @@ pub mod ecosystem;
 pub mod fs;
 pub mod net;
 pub mod runtime;
-pub mod signal;
 pub mod sync;
 pub mod time;
 
