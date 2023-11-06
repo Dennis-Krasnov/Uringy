@@ -1,5 +1,9 @@
+use std::io::Write;
+use std::os::fd::{AsRawFd, FromRawFd};
+
 #[uringy::start]
 fn main() {
-    uringy::process::print("hello ").unwrap();
-    uringy::process::print("world!\n").unwrap();
+    let mut stdout = unsafe { uringy::fs::File::from_raw_fd(std::io::stdout().as_raw_fd()) };
+
+    stdout.write_all(b"hello world").unwrap();
 }
