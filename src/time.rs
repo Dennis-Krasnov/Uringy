@@ -4,10 +4,7 @@ use crate::{runtime, Error};
 
 /// Puts the current fiber to sleep for at least [duration].
 pub fn sleep(duration: Duration) -> crate::CancellableResult<()> {
-    let timespec = io_uring::types::Timespec::new()
-        .sec(duration.as_secs())
-        .nsec(duration.subsec_nanos());
-
+    let timespec = io_uring::types::Timespec::from(duration);
     let sqe = io_uring::opcode::Timeout::new(&timespec).build();
     let result = runtime::syscall(sqe);
 
