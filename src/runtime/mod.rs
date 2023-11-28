@@ -1,3 +1,5 @@
+//! ...
+
 use std::any::Any;
 use std::collections::{BTreeSet, VecDeque};
 use std::num::NonZeroUsize;
@@ -5,8 +7,8 @@ use std::{hint, io, marker, mem, panic, thread};
 
 mod context_switch;
 mod stack;
+mod syscall;
 mod tls;
-mod uring;
 
 /// ...
 pub fn start<F: FnOnce() -> T, T>(f: F) -> thread::Result<T> {
@@ -62,7 +64,7 @@ extern "C" fn start_trampoline<F: FnOnce() -> T, T>() -> ! {
 }
 
 struct RuntimeState {
-    uring: uring::Uring,
+    kernel: syscall::Interface,
     fibers: slab::Slab<FiberState>,
     ready_fibers: VecDeque<FiberIndex>,
     running_fiber: Option<FiberIndex>,
@@ -73,7 +75,7 @@ struct RuntimeState {
 impl RuntimeState {
     fn new() -> Self {
         RuntimeState {
-            uring: uring::Uring::new(),
+            kernel: syscall::Interface::new(),
             fibers: slab::Slab::new(),
             ready_fibers: VecDeque::new(),
             running_fiber: None,
@@ -124,7 +126,7 @@ impl RuntimeState {
 
     fn process_io(&mut self) -> *const context_switch::Continuation {
         loop {
-            for (user_data, result) in self.uring.process_cq() {
+            for (user_data, result) in self.kernel.process_completed() {
                 let fiber = FiberIndex(user_data.0 as usize);
                 self.fibers[fiber.0].syscall_result = Some(result);
                 Waker(fiber).schedule_with(self);
@@ -136,7 +138,7 @@ impl RuntimeState {
                 break &self.fibers[fiber.0].continuation as *const context_switch::Continuation;
             }
 
-            self.uring.wait_for_completed_syscall();
+            self.kernel.wait_for_completed();
         }
     }
 
@@ -460,13 +462,13 @@ pub(crate) fn syscall(sqe: io_uring::squeue::Entry) -> crate::IoResult<u32> {
     }
 
     let fiber_id = tls::runtime(|rt| rt.running_fiber.unwrap());
-    let user_data = uring::UserData(fiber_id.0 as u64);
+    let syscall_id = syscall::Id(fiber_id.0 as u64);
 
     tls::runtime(|runtime| {
         let fiber = runtime.running();
         assert!(fiber.syscall_result.is_none());
 
-        runtime.uring.issue_syscall(user_data, sqe);
+        runtime.kernel.issue(syscall_id, sqe);
     });
 
     park(|_| {}); // woken up by CQE or cancellation
@@ -476,7 +478,7 @@ pub(crate) fn syscall(sqe: io_uring::squeue::Entry) -> crate::IoResult<u32> {
     }
 
     assert!(is_cancelled());
-    tls::runtime(|rt| rt.uring.cancel_syscall(user_data));
+    tls::runtime(|rt| rt.kernel.cancel(syscall_id));
     park(|_| {}); // woken up by CQE
 
     read_syscall_result()

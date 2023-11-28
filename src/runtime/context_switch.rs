@@ -1,4 +1,6 @@
-//! Cross-architecture support for userspace multitasking.
+//! Abstraction over userspace multitasking.
+//!
+//! Provides an implementation for every CPU architecture.
 
 use std::arch::global_asm;
 
@@ -13,8 +15,8 @@ extern "C" {
 
     /// Executes a context switch.
     ///
-    /// Spills registers, stores updated stack pointer in [from].
-    /// Updates stack pointer to [to], restores registers.
+    /// Spills registers, sets [from] to updated stack pointer.
+    /// Sets stack pointer to [to], restores registers.
     pub(super) fn jump(from: *mut Continuation, to: *const Continuation);
 }
 

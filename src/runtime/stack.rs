@@ -1,4 +1,7 @@
-//! ...
+//! Userspace stack.
+//!
+//! Demand paging ensures that physical memory is allocated only as necessary, during a page fault.
+//! The stack is protected from overflow using guard pages at the lowest addresses.
 
 use std::num::NonZeroUsize;
 use std::{ffi, io, ptr};
@@ -10,9 +13,7 @@ pub(super) struct Stack {
 }
 
 impl Stack {
-    /// Allocates a general purpose stack.
-    /// Demand paging ensures that physical memory is allocated only as necessary, during a page fault.
-    /// The stack is protected from overflow using guard pages.
+    /// Allocates a new stack.
     pub(super) fn new(guard_pages: NonZeroUsize, usable_pages: NonZeroUsize) -> io::Result<Self> {
         let (guard_pages, usable_pages) = (guard_pages.get(), usable_pages.get());
 
@@ -42,7 +43,6 @@ impl Stack {
             length,
         };
 
-        // located at the lowest addresses since the stack grows downward
         let result = unsafe { libc::mprotect(pointer, guard_pages * page_size, libc::PROT_NONE) };
         if result == -1 {
             let error = io::Error::last_os_error();
@@ -52,7 +52,7 @@ impl Stack {
         Ok(stack)
     }
 
-    /// ...
+    /// The highest address, since stacks grow downwards.
     pub(super) fn base(&self) -> *mut u8 {
         // safety: part of same allocation, can't overflow
         unsafe { self.pointer.add(self.length) }

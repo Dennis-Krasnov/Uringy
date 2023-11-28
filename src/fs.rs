@@ -1,6 +1,4 @@
-//! Filesystem manipulation operations.
-//!
-//! Inspired by the standard library.
+//! Filesystem operations inspired by the standard library.
 
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
