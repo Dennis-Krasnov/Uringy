@@ -1,3 +1,5 @@
+//! ...
+
 use crate::IoResult;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::option;

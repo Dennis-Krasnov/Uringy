@@ -1,112 +1,37 @@
 //! ...
 
+use crate::circular_buffer::Uninit;
+use std::cell::RefCell;
+use std::io::{Read, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+use std::rc::Rc;
 use std::{io, mem};
 
-use crate::runtime;
+use crate::{runtime, IoResult};
 
 /// ...
-#[derive(Debug)]
-pub struct Stream(RawFd);
+pub fn connect(address: impl super::ToSocketAddrs) -> IoResult<(WriteHalf, ReadHalf)> {
+    let address = address.to_socket_addrs()?.next().unwrap().to_string();
 
-impl Stream {
-    /// ...
-    pub fn connect(address: impl super::ToSocketAddrs) -> crate::IoResult<Self> {
-        let address = address.to_socket_addrs()?.next().unwrap().to_string();
+    // TODO: ensure runtime exists
+    // TODO: take std::net::IpAddr (dns -> happy eyes)
+    // TODO: do this manually: https://www.geeksforgeeks.org/tcp-server-client-implementation-in-c/
+    // let sqe = io_uring::opcode::Connect::new().build(); // TODO: benchmark difference!
+    let stream = std::net::TcpStream::connect(address).unwrap();
+    let fd = stream.into_raw_fd();
 
-        // TODO: ensure runtime exists
-        // TODO: take std::net::IpAddr (dns -> happy eyes)
-        // TODO: do this manually: https://www.geeksforgeeks.org/tcp-server-client-implementation-in-c/
-        // let sqe = io_uring::opcode::Connect::new().build(); // TODO: benchmark difference!
-        let stream = std::net::TcpStream::connect(address).unwrap();
-        let fd = stream.into_raw_fd();
-        Ok(Stream(fd))
-    }
+    let state = Rc::new(RefCell::new(StreamState { fd }));
 
-    /// ...
-    pub fn peer_addr(&self) -> crate::IoResult<SocketAddr> {
-        let stream = unsafe { std::net::TcpStream::from_raw_fd(self.0) };
-        let addr = stream.peer_addr()?;
-        mem::forget(stream);
-        Ok(addr)
-    }
-
-    /// ...
-    pub fn local_addr(&self) -> crate::IoResult<SocketAddr> {
-        let stream = unsafe { std::net::TcpStream::from_raw_fd(self.0) };
-        let addr = stream.local_addr()?;
-        mem::forget(stream);
-        Ok(addr)
-    }
-
-    // TODO: shutdown
-    // TODO: try_clone or split
-    // TODO: set_read_timeout, set_write_timeout, read_timeout, write_timeout; impl w/ linked op cancel
-    // TODO: peek
-    // TODO: set_linger/linger
-
-    /// ...
-    /// Nagle's algorithm coalesces small packets... smaller than needed packets wasting bandwidth... doesn't work well with TCP_NODELAY.
-    /// modern applications do buffering themselves...
-    /// TCP_NODELAY is for a specific purpose; to disable the Nagle buffering algorithm.
-    /// It should only be set for applications that send frequent small bursts of information without getting an immediate response,
-    /// where timely delivery of data is required (the canonical example is mouse movements).
-    pub fn set_nodelay(&self, nodelay: bool) -> crate::IoResult<()> {
-        let stream = unsafe { std::net::TcpStream::from_raw_fd(self.0) };
-        stream.set_nodelay(nodelay)?;
-        mem::forget(stream);
-        Ok(())
-    }
-
-    /// ...
-    pub fn nodelay(&self) -> crate::IoResult<bool> {
-        let stream = unsafe { std::net::TcpStream::from_raw_fd(self.0) };
-        let nodelay = stream.nodelay()?;
-        mem::forget(stream);
-        Ok(nodelay)
-    }
-
-    /// ...
-    pub fn set_ttl(&self, ttl: u32) -> crate::IoResult<()> {
-        let stream = unsafe { std::net::TcpStream::from_raw_fd(self.0) };
-        stream.set_ttl(ttl)?;
-        mem::forget(stream);
-        Ok(())
-    }
-
-    /// ...
-    pub fn ttl(&self) -> crate::IoResult<u32> {
-        let stream = unsafe { std::net::TcpStream::from_raw_fd(self.0) };
-        let ttl = stream.ttl()?;
-        mem::forget(stream);
-        Ok(ttl)
-    }
-
-    // TODO: take_error SO_ERROR
+    Ok((WriteHalf(state.clone()), ReadHalf(state)))
 }
 
-impl Drop for Stream {
-    fn drop(&mut self) {
-        let fd = io_uring::types::Fd(self.0);
-        let sqe = io_uring::opcode::Close::new(fd).build();
-        let _ = runtime::syscall(sqe);
-    }
-}
+/// ...
+pub struct WriteHalf(Rc<RefCell<StreamState>>);
 
-// TODO: implement on top of recv for reuse with OwnedReadHalf
-impl io::Read for Stream {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let fd = io_uring::types::Fd(self.0);
-        let sqe = io_uring::opcode::Recv::new(fd, buffer.as_mut_ptr(), buffer.len() as u32).build();
-        let bytes_read = runtime::syscall(sqe)?;
-        Ok(bytes_read as usize)
-    }
-}
-
-impl io::Write for Stream {
+impl Write for WriteHalf {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        let fd = io_uring::types::Fd(self.0);
+        let fd = io_uring::types::Fd(self.0.borrow().fd);
         let sqe = io_uring::opcode::Send::new(fd, buffer.as_ptr(), buffer.len() as u32).build();
         let bytes_wrote = runtime::syscall(sqe)?;
         Ok(bytes_wrote as usize)
@@ -118,13 +43,48 @@ impl io::Write for Stream {
 }
 
 /// ...
+pub struct ReadHalf(Rc<RefCell<StreamState>>);
+
+impl Read for ReadHalf {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let fd = io_uring::types::Fd(self.0.borrow().fd);
+        let sqe = io_uring::opcode::Recv::new(fd, buffer.as_mut_ptr(), buffer.len() as u32).build();
+        let bytes_read = runtime::syscall(sqe)?;
+        Ok(bytes_read as usize)
+    }
+}
+
+impl crate::FixedRead for ReadHalf {
+    fn read_fixed(&mut self, circular_buffer: &mut Uninit) -> IoResult<()> {
+        let bytes_read = self
+            .read(circular_buffer) // TODO: fixed buffer
+            .map_err(crate::Error::from_io_error)?;
+
+        if bytes_read == 0 {
+            return Err(crate::Error::Original(io::Error::new(
+                io::ErrorKind::ConnectionReset, // TODO: pick correct buffer
+                "...",
+            )));
+        }
+        circular_buffer.commit(bytes_read);
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct StreamState {
+    fd: RawFd,
+}
+
+/// ...
 #[derive(Debug)]
 pub struct Listener(RawFd);
 
 impl Listener {
     /// ...
     pub fn bind(address: impl super::ToSocketAddrs) -> crate::IoResult<Self> {
-        // FIXME
+        // FIXME non-blocking
         let address = address.to_socket_addrs()?.next().unwrap().to_string();
         let listener = std::net::TcpListener::bind(address)?;
         let fd = listener.as_raw_fd();
@@ -134,7 +94,7 @@ impl Listener {
     }
 
     /// ...
-    pub fn accept(&self) -> crate::IoResult<(Stream, SocketAddr)> {
+    pub fn accept(&self) -> crate::IoResult<((WriteHalf, ReadHalf), SocketAddr)> {
         let fd = io_uring::types::Fd(self.0);
         let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
         let mut length = mem::size_of_val(&storage) as libc::socklen_t;
@@ -142,13 +102,21 @@ impl Listener {
             .flags(libc::SOCK_CLOEXEC)
             .build();
         let fd = runtime::syscall(sqe)?;
-        let stream = Stream(RawFd::from(fd as i32));
+
+        let fd = RawFd::from(fd as i32);
+        let state = Rc::new(RefCell::new(StreamState { fd }));
+        let stream = (WriteHalf(state.clone()), ReadHalf(state));
+
         let addr = sockaddr_to_addr(&storage, length as usize)?;
 
         Ok((stream, addr))
     }
 
     // TODO: incoming, into_incoming
+    /// not the same as std library! can return None...
+    pub fn into_incoming(self) -> IntoIncoming {
+        IntoIncoming(self)
+    }
 
     /// ...
     pub fn local_addr(&self) -> crate::IoResult<SocketAddr> {
@@ -182,6 +150,17 @@ impl Drop for Listener {
         let fd = io_uring::types::Fd(self.0);
         let sqe = io_uring::opcode::Close::new(fd).build();
         let _ = runtime::syscall(sqe);
+    }
+}
+
+/// ...
+pub struct IntoIncoming(Listener);
+
+impl Iterator for IntoIncoming {
+    type Item = (WriteHalf, ReadHalf);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.accept().map(|(s, _)| s).ok()
     }
 }
 
@@ -226,71 +205,48 @@ mod tests {
     #[test]
     fn smoke() {
         start(|| {
-            let (server_addr_handle, server_addr) = crate::sync::channel::unbounded();
-            let (client_addr_handle, client_addr) = crate::sync::channel::unbounded();
+            let listener = Listener::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+            let server_addr = listener.local_addr().unwrap();
+
+            let (client_addr_handle, _client_addr) = crate::sync::channel::unbounded();
 
             spawn(move || {
-                let listener = Listener::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
-                let server_addr = listener.local_addr().unwrap();
-                server_addr_handle.send(server_addr).unwrap();
-
-                let (mut tcp, address) = listener.accept().unwrap();
+                let ((mut w, mut r), address) = listener.accept().unwrap();
                 client_addr_handle.send(address).unwrap();
-                tcp.write_all(b"hello").unwrap();
+
+                let mut buffer = vec![0; 1024];
+                let bytes_read = r.read(&mut buffer).unwrap();
+                w.write_all(&buffer[..bytes_read]).unwrap();
             });
 
-            let server_addr = server_addr.recv().unwrap();
-            let mut tcp = Stream::connect((Ipv4Addr::LOCALHOST, server_addr.port())).unwrap();
-            let client_addr = client_addr.recv().unwrap();
-            assert_eq!(tcp.peer_addr().unwrap().port(), server_addr.port());
-            assert_eq!(tcp.local_addr().unwrap(), client_addr);
+            let (mut w, mut r) = connect((Ipv4Addr::LOCALHOST, server_addr.port())).unwrap();
+            // assert_eq!(w.addr(), server_addr);
+            // assert_eq!(r.addr(), client_addr.recv().unwrap());
+
+            w.write_all(b"hello").unwrap();
 
             let mut buffer = vec![0; 1024];
-            let bytes_read = tcp.read(&mut buffer).unwrap();
+            let bytes_read = r.read(&mut buffer).unwrap();
             assert_eq!(&buffer[..bytes_read], b"hello");
         })
         .unwrap();
     }
+
+    // #[test]
+    // // #[ignore = "takes 16s to run in release mode"]
+    // fn cleans_up_after_itself() {
+    //     start(|| {
+    //         // enough to hit OS limits
+    //         for _ in 0..1_000_000 {
+    //             // FIXME: this hits the wrong os limits: called `Result::unwrap()` on an `Err` value: Original(Os { code: 98, kind: AddrInUse, message: "Address already in use" })
+    //             //  need to set flag on tcp stream to prevent wait state
+    //             let listener = Listener::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+    //             let port = listener.local_addr().unwrap().port();
+    //             let server = spawn(move || drop(listener.accept().unwrap().0));
+    //             drop(connect((Ipv4Addr::LOCALHOST, port)).unwrap());
+    //             server.join().unwrap();
+    //         }
+    //     })
+    //     .unwrap();
+    // }
 }
-
-// pub fn setsockopt<T>(
-//     sock: &Socket,
-//     level: c_int,
-//     option_name: c_int,
-//     option_value: T,
-// ) -> io::Result<()> {
-//     unsafe {
-//         cvt(c::setsockopt(
-//             sock.as_raw(),
-//             level,
-//             option_name,
-//             &option_value as *const T as *const _,
-//             mem::size_of::<T>() as c::socklen_t,
-//         ))?;
-//         Ok(())
-//     }
-// }
-
-// pub fn getsockopt<T: Copy>(sock: &Socket, level: c_int, option_name: c_int) -> io::Result<T> {
-//     unsafe {
-//         let mut option_value: T = mem::zeroed();
-//         let mut option_len = mem::size_of::<T>() as c::socklen_t;
-//         cvt(c::getsockopt(
-//             sock.as_raw(),
-//             level,
-//             option_name,
-//             &mut option_value as *mut T as *mut _,
-//             &mut option_len,
-//         ))?;
-//         Ok(option_value)
-//     }
-// }
-
-// pub fn set_ttl(&self, ttl: u32) -> io::Result<()> {
-//     setsockopt(&self.inner, c::IPPROTO_IP, c::IP_TTL, ttl as c_int)
-// }
-//
-// pub fn ttl(&self) -> io::Result<u32> {
-//     let raw: c_int = getsockopt(&self.inner, c::IPPROTO_IP, c::IP_TTL)?;
-//     Ok(raw as u32)
-// }
