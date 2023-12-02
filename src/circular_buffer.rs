@@ -14,19 +14,160 @@
 //! 2MB huge pages can be enabled with the [huge_pages] cargo feature.
 //! https://www.kernel.org/doc/Documentation/admin-guide/mm/hugetlbpage.rst
 //!
-//! Downsides:
-//! - buffer size has to be a multiple of the page size
-//! - takes several syscalls to set up and tear down
-//! - occupies several entries in the TLB
-//! - doesn't work in no_std
-//! - need to handle race conditions on Windows
+//! This design has several downsides:
+//! - Buffer size has to be a multiple of the page size (4KB).
+//! - It takes several blocking syscalls to set up and tear down (~16μs).
+//! - Memory maps occupy several entries in the TLB.
+//! - It doesn't work in `no_std` environments.
 
+use std::cell::RefCell;
 use std::os::fd::{AsRawFd, FromRawFd};
+use std::rc::Rc;
 use std::{ffi, io, ops, ptr, slice};
 
 /// ...
+/// minimum [length] in bytes.
+pub fn circular_buffer(length: usize) -> io::Result<(Data, Uninit)> {
+    let length = calculate_length(length)?;
+
+    // setup physical memory
+    let file = anonymous_file()?;
+    file.set_len(length as u64)?;
+
+    // setup virtual memory mappings
+    let pointer = anonymous_mapping(2 * length)?;
+    file_mapping(&file, pointer, length)?;
+    file_mapping(&file, unsafe { pointer.add(length) }, length)?;
+
+    let state = Rc::new(RefCell::new(State {
+        _file: file,
+        pointer: pointer as *mut u8,
+        head: 0,
+        tail: 0,
+        length,
+    }));
+
+    Ok((Data(state.clone()), Uninit(state)))
+}
+
+fn calculate_length(length: usize) -> io::Result<usize> {
+    let page_size = if cfg!(feature = "huge_pages") {
+        2 * 1024 * 1024
+    } else {
+        unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
+    };
+
+    length
+        .checked_next_multiple_of(page_size)
+        .and_then(usize::checked_next_power_of_two)
+        .ok_or(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid circular buffer size",
+        ))
+}
+
+/// ...
 #[derive(Debug)]
-pub struct CircularBuffer {
+pub struct Data(Rc<RefCell<State>>);
+
+impl Data {
+    /// ... data -> uninit
+    pub fn consume(&mut self, capacity: usize) {
+        let mut state = self.0.borrow_mut();
+        state.head = state.head.overflowing_add(capacity).0; // safe to overflow due to power of two length
+        assert!(state.head <= state.tail);
+    }
+
+    /// ...
+    pub fn len(&self) -> usize {
+        let state = self.0.borrow();
+        state.data_len()
+    }
+
+    /// ...
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl ops::Deref for Data {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        let state = self.0.borrow();
+        unsafe {
+            slice::from_raw_parts(
+                state.pointer.add(p2_modulo(state.head, state.length)),
+                state.data_len(),
+            )
+        }
+    }
+}
+
+impl ops::DerefMut for Data {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        let state = self.0.borrow_mut();
+        unsafe {
+            slice::from_raw_parts_mut(
+                state.pointer.add(p2_modulo(state.head, state.length)),
+                state.data_len(),
+            )
+        }
+    }
+}
+
+/// ...
+#[derive(Debug)]
+pub struct Uninit(Rc<RefCell<State>>);
+
+impl Uninit {
+    /// ... uninit -> data
+    pub fn commit(&mut self, capacity: usize) {
+        assert!(capacity <= self.len());
+        let mut state = self.0.borrow_mut();
+        state.tail = state.tail.overflowing_add(capacity).0; // safe to overflow due to power of two length
+    }
+
+    /// ...
+    pub fn len(&self) -> usize {
+        let state = self.0.borrow();
+        state.uninit_len()
+    }
+
+    /// ...
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl ops::Deref for Uninit {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        let state = self.0.borrow();
+        unsafe {
+            slice::from_raw_parts(
+                state.pointer.add(p2_modulo(state.tail, state.length)),
+                state.uninit_len(),
+            )
+        }
+    }
+}
+
+impl ops::DerefMut for Uninit {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        let state = self.0.borrow_mut();
+        unsafe {
+            slice::from_raw_parts_mut(
+                state.pointer.add(p2_modulo(state.tail, state.length)),
+                state.uninit_len(),
+            )
+        }
+    }
+}
+
+#[derive(Debug)]
+struct State {
     _file: std::fs::File,
     pointer: *mut u8,
     head: usize,
@@ -34,94 +175,29 @@ pub struct CircularBuffer {
     length: usize,
 }
 
-impl CircularBuffer {
-    /// ...
-    /// minimum [size] in bytes.
-    pub fn new(size: usize) -> io::Result<Self> {
-        let page_size = if cfg!(feature = "huge_pages") {
-            2048 * 1024
-        } else {
-            unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
-        };
-
-        let size = size
-            .checked_next_multiple_of(page_size)
-            .and_then(usize::checked_next_power_of_two)
-            .ok_or(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "invalid circular buffer size",
-            ))?;
-
-        // setup physical memory
-        let file = anonymous_file()?;
-        file.set_len(size as u64)?;
-
-        // setup virtual memory mappings
-        let pointer = anonymous_mapping(2 * size)?;
-        file_mapping(&file, pointer, size)?;
-        file_mapping(&file, unsafe { pointer.add(size) }, size)?;
-
-        Ok(CircularBuffer {
-            _file: file,
-            pointer: pointer as *mut u8,
-            head: 0,
-            tail: 0,
-            length: size,
-        })
+impl State {
+    fn data_len(&self) -> usize {
+        self.tail - self.head
     }
 
-    /// ... uninit -> data
-    #[inline]
-    pub fn commit(&mut self, capacity: usize) {
-        assert!(capacity <= self.uninit().len());
-
-        self.tail = self.tail.overflowing_add(capacity).0; // safe to overflow due to power of two size
-    }
-
-    /// ... data -> uninit
-    #[inline]
-    pub fn consume(&mut self, capacity: usize) {
-        self.head = self.head.overflowing_add(capacity).0; // safe to overflow due to power of two size
-
-        assert!(self.head <= self.tail);
-    }
-
-    /// ...
-    #[inline]
-    pub fn data(&mut self) -> Buffer<'_> {
-        Buffer(unsafe {
-            slice::from_raw_parts_mut(
-                self.pointer.add(p2_modulo(self.head, self.length)),
-                self.tail - self.head,
-            )
-        })
-    }
-
-    /// ...
-    #[inline]
-    pub fn uninit(&mut self) -> Buffer<'_> {
-        Buffer(unsafe {
-            slice::from_raw_parts_mut(
-                self.pointer.add(p2_modulo(self.tail, self.length)),
-                self.length - (self.tail - self.head),
-            )
-        })
-    }
-
-    /// ...
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.length
+    fn uninit_len(&self) -> usize {
+        self.length - self.data_len()
     }
 }
 
-impl Drop for CircularBuffer {
+impl Drop for State {
     fn drop(&mut self) {
         let pointer = self.pointer as *mut ffi::c_void;
         let _ = remove_mapping(pointer, 2 * self.length);
         let _ = remove_mapping(pointer, self.length);
         let _ = remove_mapping(unsafe { pointer.add(self.length) }, self.length);
     }
+}
+
+/// Bit-hacking optimization for calculating a number mod a power of two.
+unsafe fn p2_modulo(n: usize, m: usize) -> usize {
+    debug_assert!(m.is_power_of_two());
+    n & (m - 1)
 }
 
 fn anonymous_file() -> io::Result<std::fs::File> {
@@ -192,121 +268,94 @@ fn file_mapping(file: &std::fs::File, pointer: *mut ffi::c_void, size: usize) ->
     Ok(())
 }
 
-/// Bit-hacking optimization for calculating a number mod a power of two.
-unsafe fn p2_modulo(n: usize, m: usize) -> usize {
-    debug_assert!(m.is_power_of_two());
-    n & (m - 1)
-}
-
-/// ...
-#[derive(Debug)]
-pub struct Buffer<'a>(&'a mut [u8]);
-
-impl ops::Deref for Buffer<'_> {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        self.0
-    }
-}
-
-impl ops::DerefMut for Buffer<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0
-    }
-}
-
-// TODO: AsRef<[u8]>, AsMut<[u8]>, Borrow<[u8]>, BorrowMut<[u8]>
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn initially_empty() {
-        let mut queue = CircularBuffer::new(4096).unwrap();
+    fn starts_uninitialized() {
+        let (data, uninit) = circular_buffer(4096).unwrap();
 
-        assert_eq!(queue.data().len(), 0);
-        assert_eq!(queue.uninit().len(), queue.len());
+        assert!(data.is_empty());
+        assert_eq!(uninit.len(), 4096);
     }
 
     #[test]
-    fn rounds_up_size_to_nearest_page_size() {
-        let queue = CircularBuffer::new(1).unwrap();
+    fn rounds_up_length_to_nearest_page_size() {
+        let (_, uninit) = circular_buffer(1).unwrap();
 
-        assert!(queue.len() > 1);
-        assert!(queue.len().is_power_of_two());
+        assert!(uninit.len() > 1);
+        assert!(uninit.len().is_power_of_two());
     }
 
     #[test]
-    fn commit_uninitialized_memory() {
-        let mut queue = CircularBuffer::new(4096).unwrap();
+    fn commits_uninit() {
+        let (data, mut uninit) = circular_buffer(4096).unwrap();
 
-        queue.uninit()[..3].copy_from_slice(b"hii");
-        queue.commit(3);
+        uninit[..2].copy_from_slice(b"hi");
+        uninit.commit(2);
 
-        assert_eq!(queue.data().as_ref(), b"hii");
-        assert_eq!(queue.uninit().len(), queue.len() - 3);
+        assert_eq!(data.as_ref(), b"hi");
+        assert_eq!(uninit.len(), 4096 - 2);
     }
 
     #[test]
-    fn consume_written_data() {
-        let mut queue = CircularBuffer::new(4096).unwrap();
-        queue.uninit()[..3].copy_from_slice(b"hii");
-        queue.commit(3);
+    fn consumes_data() {
+        let (mut data, mut uninit) = circular_buffer(4096).unwrap();
+        uninit[..2].copy_from_slice(b"hi");
+        uninit.commit(2);
 
-        let consumed = &queue.data()[..2];
-        assert_eq!(consumed, b"hi");
-        queue.consume(2);
+        assert_eq!(&data[..1], b"h");
+        data.consume(1);
 
-        assert_eq!(queue.data().as_ref(), b"i");
-        assert_eq!(queue.uninit().len(), queue.len() - 1);
+        assert_eq!(data.as_ref(), b"i");
+        assert_eq!(uninit.len(), 4096 - 1);
     }
 
     #[test]
-    fn overflowing_uninitialized() {
-        let mut queue = CircularBuffer::new(4096).unwrap();
-        queue.commit(queue.len() - 1);
-        queue.consume(queue.len() - 1);
+    fn data_spans_across_boundary() {
+        let (mut data, mut uninit) = circular_buffer(4096).unwrap();
+        uninit.commit(uninit.len() - 1);
+        data.consume(data.len());
 
-        assert_eq!(queue.uninit().len(), queue.len());
+        uninit[..2].copy_from_slice(b"hi");
+        uninit.commit(2);
+
+        assert_eq!(data.as_ref(), b"hi");
     }
 
     #[test]
-    fn overflowing_data() {
-        let mut queue = CircularBuffer::new(4096).unwrap();
-        queue.commit(queue.len() - 1);
-        queue.consume(queue.len() - 1);
+    fn uninit_spans_across_boundary() {
+        let (mut data, mut uninit) = circular_buffer(4096).unwrap();
 
-        queue.uninit()[..2].copy_from_slice(b"hi");
-        queue.commit(2);
+        uninit.commit(42);
+        data.consume(42);
 
-        assert_eq!(queue.data().as_ref(), b"hi");
+        assert_eq!(uninit.len(), 4096);
     }
 
     #[test]
     #[should_panic]
     fn cant_consume_more_than_committed() {
-        let mut queue = CircularBuffer::new(4096).unwrap();
+        let (mut data, _) = circular_buffer(4096).unwrap();
 
-        queue.consume(1);
+        data.consume(data.len() + 1);
     }
 
     #[test]
     #[should_panic]
     fn cant_commit_more_than_uninitialized() {
-        let mut queue = CircularBuffer::new(4096).unwrap();
-        queue.commit(queue.len() - 1);
+        let (_, mut uninit) = circular_buffer(4096).unwrap();
 
-        queue.commit(2);
+        uninit.commit(uninit.len() + 1);
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "takes 16s to run in release mode"]
     fn cleans_up_after_itself() {
         // enough to hit OS limits
         for _ in 0..1_000_000 {
-            drop(CircularBuffer::new(4096).unwrap());
+            drop(circular_buffer(4096).unwrap());
         }
     }
 }
