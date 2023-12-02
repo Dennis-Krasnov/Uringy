@@ -8,7 +8,6 @@ use nom::character::streaming as character;
 use nom::combinator::*;
 use nom::sequence::*;
 
-/// A protocol operation sent by the client.
 #[derive(Debug, PartialEq)]
 pub(super) enum ClientOperation<'a> {
     /// Sent to server to specify connection information.
@@ -32,7 +31,7 @@ pub(super) enum ClientOperation<'a> {
         payload: &'a [u8],
     },
 
-    /// Subscribe to a subject (or subject wildcard).
+    /// Subscribe to a subject, with optional load balancing.
     /// Wire protocol: `SUB <subject> [queue group] <sid>\r\n`.
     Sub {
         subject: &'a str,
@@ -40,7 +39,7 @@ pub(super) enum ClientOperation<'a> {
         sid: u64, // FIXME: sid is alphanumeric
     },
 
-    /// Unsubscribe (or auto-unsubscribe) from subject.
+    /// Unsubscribe from subject, optionally after a number of messages.
     /// Wire protocol: `UNSUB <sid> [max_msgs]\r\n`.
     Unsub { sid: u64, max_messages: Option<u64> }, // FIXME: sid is alphanumeric
 
@@ -111,14 +110,13 @@ impl ClientOperation<'_> {
     }
 }
 
-/// A protocol operation sent by the server.
 #[derive(Debug, PartialEq)]
 pub(super) enum ServerOperation<'a> {
     /// Sent to client after initial TCP/IP connection.
     /// Wire protocol: `INFO <json>\r\n`.
     Info { json: &'a str },
 
-    /// Delivers a message payload to a subscriber.
+    /// Delivers a message payload to a subscriber, with optional reply subject.
     /// Wire protocol: `MSG <subject> <sid> [reply-to] <#bytes>\r\n[payload]\r\n`.
     Msg {
         subject: &'a str,
@@ -127,7 +125,7 @@ pub(super) enum ServerOperation<'a> {
         payload: &'a [u8],
     },
 
-    /// Delivers a message payload to a subscriber, with headers.
+    /// Delivers a message payload to a subscriber, with optional reply subject, with headers.
     /// Wire protocol: `HMSG <subject> <sid> [reply-to] <#header_bytes> <#total_bytes>\r\n[headers][payload]\r\n`.
     Hmsg {
         subject: &'a str,
@@ -249,7 +247,6 @@ fn parse_pong(buffer: &[u8]) -> nom::IResult<&[u8], ServerOperation> {
     Ok((buffer, ServerOperation::Pong))
 }
 
-/// ...
 fn parse_subject(buffer: &[u8]) -> nom::IResult<&[u8], &str> {
     // TODO: while(alphanumeric)|wildcard|fullwildcard delimited with .
     let (buffer, subject) = map_res(
