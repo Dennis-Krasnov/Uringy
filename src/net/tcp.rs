@@ -54,24 +54,6 @@ impl Read for ReadHalf {
     }
 }
 
-impl crate::FixedRead for ReadHalf {
-    fn read_fixed(&mut self, circular_buffer: &mut Uninit) -> IoResult<()> {
-        let bytes_read = self
-            .read(circular_buffer) // TODO: fixed buffer
-            .map_err(crate::Error::from_io_error)?;
-
-        if bytes_read == 0 {
-            return Err(crate::Error::Original(io::Error::new(
-                io::ErrorKind::ConnectionReset, // TODO: pick correct buffer
-                "...",
-            )));
-        }
-        circular_buffer.commit(bytes_read);
-
-        Ok(())
-    }
-}
-
 #[derive(Debug)]
 struct StreamState {
     fd: RawFd,
