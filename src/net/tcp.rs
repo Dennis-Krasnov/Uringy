@@ -1,6 +1,5 @@
 //! ...
 
-use crate::circular_buffer::Uninit;
 use std::cell::RefCell;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};

@@ -298,7 +298,7 @@ extern "C" fn spawn_trampoline<F: FnOnce() -> T, T>() -> ! {
     unreachable!()
 }
 
-/// ...
+/// Handle for joining or cancelling a fiber.
 #[derive(Debug)]
 pub struct JoinHandle<T> {
     fiber: FiberIndex,
