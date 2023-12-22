@@ -29,12 +29,6 @@ impl<B: IntoBody> IntoRequest for B {
     }
 }
 
-// impl IntoRequest for &'static str {
-//     fn into_request(self) -> Request {
-//         Request
-//     }
-// }
-
 /// ...
 #[derive(Debug)]
 pub struct Response<'a> {
@@ -167,6 +161,7 @@ pub enum StatusCode {
     Ok,
     Accepted,
     NotModified,
+    TemporaryRedirect,
     Forbidden,
     NotFound,
     MethodNotAllowed,
@@ -178,6 +173,7 @@ impl From<StatusCode> for u16 {
             StatusCode::Ok => 200,
             StatusCode::Accepted => 202,
             StatusCode::NotModified => 304,
+            StatusCode::TemporaryRedirect => 307,
             StatusCode::Forbidden => 403,
             StatusCode::NotFound => 404,
             StatusCode::MethodNotAllowed => 405,

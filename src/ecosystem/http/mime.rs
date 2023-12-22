@@ -54,4 +54,17 @@ impl<T: IntoBody> IntoBody for Png<T> {
     }
 }
 
+/// ...
+pub struct Woff2<T>(pub T);
+
+impl<T: IntoBody> IntoBody for Woff2<T> {
+    fn contents(&self) -> &[u8] {
+        self.0.contents()
+    }
+
+    fn content_type(&self) -> Option<&str> {
+        Some("font/woff2")
+    }
+}
+
 // https://docs.rs/mime/latest/src/mime/lib.rs.html#746-784

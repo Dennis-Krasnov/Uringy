@@ -37,6 +37,12 @@ impl Router {
         self
     }
 
+    /// ...
+    pub fn merge(self, other: Self) -> Self {
+        unimplemented!();
+        self
+    }
+
     // TODO: middleware needs to iterate over existing values https://github.com/ibraheemdev/matchit/issues/9
 
     /// ...
