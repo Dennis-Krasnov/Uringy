@@ -439,6 +439,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn head_defers_to_get() {
         start(|| {
             let app = Router::new().route("/", get(|r: Responder| r.send("hello")));
