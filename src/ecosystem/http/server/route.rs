@@ -54,7 +54,7 @@ impl Router {
             .and_then(|found| found.value.route(request.method))
             .unwrap_or(&self.fallback);
 
-        (handler)(r, request);
+        handler(r, request);
     }
 }
 
