@@ -8,6 +8,7 @@ use std::str::FromStr;
 pub struct Request<'a> {
     pub method: Method,
     pub path: &'a str,
+    pub query: &'a str,
     pub headers: Vec<(&'a str, &'a [u8])>,
     pub body: &'a [u8],
 }
@@ -15,14 +16,15 @@ pub struct Request<'a> {
 /// ...
 pub trait IntoRequest {
     /// ...
-    fn into_request<'a>(&'a self, method: Method, path: &'a str) -> Request;
+    fn into_request<'a>(&'a self, method: Method, path: &'a str, query: &'a str) -> Request;
 }
 
 impl<B: IntoBody> IntoRequest for B {
-    fn into_request<'a>(&'a self, method: Method, path: &'a str) -> Request {
+    fn into_request<'a>(&'a self, method: Method, path: &'a str, query: &'a str) -> Request {
         Request {
             method,
             path,
+            query,
             headers: Vec::new(),
             body: self.contents(),
         }
@@ -236,9 +238,9 @@ mod tests {
 
     #[test]
     fn into_request_impls() {
-        ().into_request(Method::Get, "/");
-        "".into_request(Method::Get, "/");
-        "".as_bytes().into_request(Method::Get, "/");
+        ().into_request(Method::Get, "/", "");
+        "".into_request(Method::Get, "/", "");
+        "".as_bytes().into_request(Method::Get, "/", "");
     }
 
     #[test]

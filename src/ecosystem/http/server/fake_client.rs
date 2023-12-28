@@ -61,7 +61,7 @@ impl FakeClient {
     pub fn request(&mut self, method: Method, path: &str, request: impl IntoRequest) -> Response {
         let (tx, rx) = channel::unbounded(); // TODO: channel::oneshot
         let r = Responder(Box::new(FakeResponder(tx)));
-        let request = request.into_request(method, path);
+        let request = request.into_request(method, path, ""); // FIXME: take query params from builder
         self.router.handle(r, &request);
         self.response = Some(rx.recv().expect("must respond..."));
         Response::from(self.response.as_ref().unwrap())

@@ -1,14 +1,15 @@
 //! ...
 
-use crate::circular_buffer;
-use crate::circular_buffer::circular_buffer;
-use crate::ecosystem::http::payload::{Request, Response};
-use crate::ecosystem::http::server::route::Router;
-use crate::ecosystem::http::{Respond, Responder};
-use crate::runtime::{cancel_propagating, is_cancelled, park, spawn, Waker};
 use std::cell::RefCell;
 use std::io::{BufWriter, Read, Write};
 use std::rc::Rc;
+
+use crate::circular_buffer;
+use crate::circular_buffer::circular_buffer;
+use crate::ecosystem::http::{Respond, Responder};
+use crate::ecosystem::http::payload::{Request, Response};
+use crate::ecosystem::http::server::route::Router;
+use crate::runtime::{is_cancelled, park, spawn, Waker};
 
 pub mod fake_client;
 pub mod route;
@@ -16,7 +17,7 @@ pub mod route;
 /// ...
 pub fn serve<W: Write + 'static, R: Read + 'static>(
     router: Router,
-    connections: impl Iterator<Item = (W, R)>,
+    connections: impl Iterator<Item=(W, R)>,
 ) {
     // TODO: don't need Rc for router when using scoped spawn
     let router = Rc::new(router);
@@ -69,9 +70,11 @@ fn handle_connection(
                 }
 
                 let r = Responder(Box::new(RealResponder(Box::new(w))));
+                let (path, query) = parse_partial_uri(request.path.unwrap());
                 let request = Request {
                     method: request.method.unwrap().parse().unwrap(),
-                    path: request.path.unwrap(),
+                    path,
+                    query,
                     headers: request.headers.iter().map(|h| (h.name, h.value)).collect(),
                     body: &data[wire_size..(wire_size + body_size)],
                 };
@@ -90,6 +93,38 @@ fn handle_connection(
     }
 
     Ok(())
+}
+
+/// Parses path and query out of partial URI (path, query, and fragment).
+/// Inspired by https://github.com/hyperium/http/blob/bda93204b3da1a776cf471ed39e8e374cec652e7/src/uri/path.rs#L21-L106.
+fn parse_partial_uri(uri: &str) -> (&str, &str) {
+    for (i, c) in uri.char_indices() {
+        match c as u8 {
+            b'?' => return (&uri[..i], parse_query(&uri[i + 1..])),
+            b'#' => return (&uri[..i], ""),
+            // Code points that don't need to be character encoded
+            0x21 | 0x24..=0x3B | 0x3D | 0x40..=0x5F | 0x61..=0x7A | 0x7C | 0x7E => {}
+            // JSON should be percent encoded, but still allowed
+            b'"' | b'{' | b'}' => {}
+            _ => panic!("invalid uri char"), // FIXME Err(InvalidUriChar)
+        }
+    }
+
+    (uri, "")
+}
+
+fn parse_query(query: &str) -> &str {
+    for (i, c) in query.char_indices() {
+        match c as u8 {
+            b'#' => return &query[..i],
+            b'?' => {}
+            // Should be percent-encoded, but most byes are actually allowed
+            0x21 | 0x24..=0x3B | 0x3D | 0x3F..=0x7E => {}
+            _ => panic!("invalid uri char"), // FIXME Err(InvalidUriChar)
+        }
+    }
+
+    query
 }
 
 fn reader(
@@ -160,8 +195,8 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::Ipv4Addr;
 
-    use crate::ecosystem::http::server::route::{get, Router};
     use crate::ecosystem::http::Responder;
+    use crate::ecosystem::http::server::route::{get, Router};
     use crate::net::tcp;
     use crate::runtime::{spawn, start};
 
@@ -186,15 +221,142 @@ mod tests {
 
             let mut buffer = vec![0; 1024];
             let bytes_read = r.read(&mut buffer).unwrap();
-            println!("read:\n{}", String::from_utf8_lossy(&buffer[..bytes_read]));
+            let response = String::from_utf8_lossy(&buffer[..bytes_read]);
+            println!("read:\n{}", response);
+            assert!(response.contains("200"));
             // assert_eq!(&buffer[..bytes_read], b"hello");
 
             server.cancel();
         })
-        .unwrap();
+            .unwrap();
     }
 
     fn index(r: Responder) {
         r.send("hello"); // TODO: include content-length
+    }
+
+    #[test]
+    fn takes_query_params() {
+        start(|| {
+            let listener = tcp::Listener::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+            let server_addr = listener.local_addr().unwrap();
+
+            let server = spawn(move || {
+                let app = Router::new().route("/", get(index));
+                serve(app, listener.into_incoming());
+            });
+
+            let (mut w, mut r) = tcp::connect((Ipv4Addr::LOCALHOST, server_addr.port())).unwrap();
+
+            // TODO: http client
+            let request_wire = b"GET /?id=123 HTTP/1.1\r\ncontent-length: 2\r\n\r\nhi";
+            w.write_all(request_wire).unwrap();
+
+            let mut buffer = vec![0; 1024];
+            let bytes_read = r.read(&mut buffer).unwrap();
+            let response = String::from_utf8_lossy(&buffer[..bytes_read]);
+            println!("read:\n{}", response);
+            assert!(response.contains("200"));
+
+            server.cancel();
+        })
+            .unwrap();
+    }
+
+    mod partial_uri {
+        use super::*;
+
+        #[test]
+        fn root_path() {
+            let (path, query) = parse_partial_uri("/");
+
+            assert_eq!(path, "/");
+            assert!(query.is_empty());
+        }
+
+        #[test]
+        fn path() {
+            let (path, query) = parse_partial_uri("/foo/bar");
+
+            assert_eq!(path, "/foo/bar");
+            assert!(query.is_empty());
+        }
+
+        #[test]
+        fn json_path() {
+            let (path, query) = parse_partial_uri(r#"/{"foo":"bar"}"#);
+
+            assert_eq!(path, r#"/{"foo":"bar"}"#);
+            assert!(query.is_empty());
+        }
+
+        #[test]
+        fn root_path_with_query() {
+            let (path, query) = parse_partial_uri("/?id=123&f");
+
+            assert_eq!(path, "/");
+            assert_eq!(query, "id=123&f");
+        }
+
+        #[test]
+        fn path_with_query() {
+            let (path, query) = parse_partial_uri("/foo/bar?id=123&f");
+
+            assert_eq!(path, "/foo/bar");
+            assert_eq!(query, "id=123&f");
+        }
+
+        #[test]
+        fn path_ignores_fragment() {
+            let (path, query) = parse_partial_uri("/foo/bar#abc");
+
+            assert_eq!(path, "/foo/bar");
+            assert!(query.is_empty());
+        }
+
+        #[test]
+        fn path_with_query_ignores_fragment() {
+            let (path, query) = parse_partial_uri("/foo/bar?id=123&f#abc");
+
+            assert_eq!(path, "/foo/bar");
+            assert_eq!(query, "id=123&f");
+        }
+
+        #[test]
+        fn subsequent_question_marks_are_just_characters() {
+            let (path, query) = parse_partial_uri("/?id=123?f");
+
+            assert_eq!(path, "/");
+            assert_eq!(query, "id=123?f"); // TODO: make sure serde_urlencoded can parse this
+        }
+
+        // TODO
+        // #[test]
+        // #[should_panic]
+        // fn fails_invalid_path() {
+        //     parse_partial_uri("/");
+        // }
+        //
+        // #[test]
+        // #[should_panic]
+        // fn fails_invalid_query() {
+        //     parse_partial_uri("/?");
+        // }
+
+        #[test]
+        fn ignores_valid_percent_encodings() {
+            assert_eq!("/a%20b", parse_partial_uri("/a%20b?r=1").0);
+            assert_eq!("qr=%31", parse_partial_uri("/a/b?qr=%31").1);
+        }
+
+        #[test]
+        fn ignores_invalid_percent_encodings() {
+            assert_eq!("/a%%b", parse_partial_uri("/a%%b?r=1").0);
+            assert_eq!("/aaa%", parse_partial_uri("/aaa%").0);
+            assert_eq!("/aaa%", parse_partial_uri("/aaa%?r=1").0);
+            assert_eq!("/aa%2", parse_partial_uri("/aa%2").0);
+            assert_eq!("/aa%2", parse_partial_uri("/aa%2?r=1").0);
+            assert_eq!("qr=%3", parse_partial_uri("/a/b?qr=%3").1);
+        }
     }
 }
