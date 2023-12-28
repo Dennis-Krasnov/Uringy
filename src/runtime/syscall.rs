@@ -31,7 +31,7 @@ impl Interface {
 
     /// ...
     /// TODO: give this a closure?
-    pub(super) fn process_completed(&mut self) -> Vec<(Id, i32)> {
+    pub(super) fn process_completed(&mut self) -> impl Iterator<Item = (Id, i32)> {
         let mut results = vec![]; // TODO: return iterator (to avoid allocating) that mutably borrows io_uring by holding cq
 
         for cqe in self.io_uring.completion() {
@@ -48,7 +48,7 @@ impl Interface {
             results.push((syscall_id, cqe.result()));
         }
 
-        results
+        results.into_iter()
     }
 
     /// ...
