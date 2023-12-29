@@ -23,7 +23,7 @@ default = ["macros"]
 macros = ["dep:uringy-macros"]
 
 # optional
-http = ["dep:mime", "dep:matchit", "dep:serde", "dep:serde_json", "dep:serde_urlencoded", "dep:httpdate", "dep:httparse"]
+http = ["dep:matchit", "dep:serde", "dep:serde_json", "dep:serde_urlencoded", "dep:httpdate", "dep:httparse"]
 nats = ["dep:nom", "dep:itoa"]
 
 # experimental
@@ -39,8 +39,6 @@ libc = "0.2.147"
 slab = "0.4.8"
 
 # HTTP
-#http = { version = "0.2.9", optional = true }
-mime = { version = "0.3.17", optional = true }
 matchit = { version = "0.7.3", optional = true }
 serde = { version = "1.0.190", optional = true }
 serde_json = { version = "1.0.108", optional = true }
