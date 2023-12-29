@@ -3,6 +3,7 @@
 //! Provides an implementation for every CPU architecture.
 
 use std::arch::global_asm;
+use std::ffi;
 
 /// Handle to a stack pointer set up for context switching.
 #[repr(transparent)]
@@ -11,7 +12,10 @@ pub(super) struct Continuation(*const ());
 
 extern "C" {
     /// Initializes a stack for context switching.
-    pub(super) fn prepare_stack(stack: *mut u8, func: extern "C" fn() -> !) -> Continuation;
+    pub(super) fn prepare_stack(
+        stack: *mut ffi::c_void,
+        func: extern "C" fn() -> !,
+    ) -> Continuation;
 
     /// Executes a context switch.
     ///

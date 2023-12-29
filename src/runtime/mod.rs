@@ -3,7 +3,7 @@
 use std::any::Any;
 use std::collections::{BTreeSet, VecDeque};
 use std::num::NonZeroUsize;
-use std::{hint, io, marker, mem, panic, thread};
+use std::{ffi, hint, io, marker, mem, panic, thread};
 
 mod context_switch;
 mod stack;
@@ -171,7 +171,7 @@ impl Drop for RuntimeState {
         let length = (guard_pages + usable_pages) * page_size;
 
         for stack_bottom in self.stack_pool.drain(..) {
-            let pointer = unsafe { stack_bottom.0.sub(length) } as *mut u8;
+            let pointer = unsafe { stack_bottom.0.byte_sub(length) };
             drop(stack::Stack { pointer, length })
         }
     }
@@ -205,7 +205,7 @@ enum JoinHandleState {
 /// Upper address of a fiber's stack memory, stack addresses grow downwards.
 /// The union of the user's closure and its output is stored at the top of the stack to save space in [FiberState].
 #[derive(Debug, Copy, Clone)]
-struct StackBase(*const u8);
+struct StackBase(*mut ffi::c_void);
 
 impl StackBase {
     unsafe fn union_ref<U>(&self) -> *const U {
@@ -216,9 +216,9 @@ impl StackBase {
         (self.0 as *mut U).sub(1)
     }
 
-    unsafe fn after_union<F, T>(&self) -> *mut u8 {
+    unsafe fn after_union<F, T>(&self) -> *mut ffi::c_void {
         let union_size = std::cmp::max(mem::size_of::<F>(), mem::size_of::<T>());
-        self.0.sub(union_size) as *mut u8
+        self.0.byte_sub(union_size)
     }
 }
 

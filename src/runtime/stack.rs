@@ -8,7 +8,7 @@ use std::{ffi, io, ptr};
 
 #[derive(Debug)]
 pub(super) struct Stack {
-    pub(super) pointer: *mut u8,
+    pub(super) pointer: *mut ffi::c_void,
     pub(super) length: usize,
 }
 
@@ -38,10 +38,7 @@ impl Stack {
         }
 
         // if guarding memory goes wrong then mmap gets cleaned up in Stack's drop
-        let stack = Stack {
-            pointer: pointer as *mut u8,
-            length,
-        };
+        let stack = Stack { pointer, length };
 
         let result = unsafe { libc::mprotect(pointer, guard_pages * page_size, libc::PROT_NONE) };
         if result == -1 {
@@ -53,15 +50,15 @@ impl Stack {
     }
 
     /// The highest address, since stacks grow downwards.
-    pub(super) fn base(&self) -> *mut u8 {
+    pub(super) fn base(&self) -> *mut ffi::c_void {
         // safety: part of same allocation, can't overflow
-        unsafe { self.pointer.add(self.length) }
+        unsafe { self.pointer.byte_add(self.length) }
     }
 }
 
 impl Drop for Stack {
     fn drop(&mut self) {
-        let result = unsafe { libc::munmap(self.pointer as *mut ffi::c_void, self.length) };
+        let result = unsafe { libc::munmap(self.pointer, self.length) };
         assert_eq!(result, 0);
     }
 }
@@ -74,7 +71,7 @@ mod tests {
     fn reads_and_writes() {
         let stack = Stack::new(NonZeroUsize::MIN, NonZeroUsize::MIN).unwrap();
         unsafe {
-            let pointer = stack.base().sub(1);
+            let pointer = (stack.base() as *mut u32).sub(1);
             pointer.write(123);
             assert_eq!(pointer.read(), 123);
         }
