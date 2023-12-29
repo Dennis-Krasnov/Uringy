@@ -13,6 +13,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
+      - name: Fix rust
+        run: rustup update stable
+
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
         with:
@@ -26,6 +29,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
+
+      - name: Fix rust
+        run: rustup update stable
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
@@ -59,33 +65,3 @@ jobs:
         run: |
           cargo install cargo-msrv
           cargo msrv verify
-
-  deploy_to_crates_io:
-    needs:
-      - unit_test
-      - verify_msrv
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: deploy-to-crates-io
-
-      - name: Determine whether current version is already deployed
-        run: |
-          cargo install cargo-get
-          CRATE_VERSION=$(cargo get package.version | tr -d '\n')
-          VERSION_EXISTS=$(curl -s https://crates.io/api/v1/crates/uringy | jq '.versions | map(.num) | contains(["'$CRATE_VERSION'"])')
-          echo "VERSION_EXISTS=$VERSION_EXISTS" >> $GITHUB_OUTPUT
-        id: whether-deployed
-
-      - name: Login to crates.io
-        run: cargo login ${{ secrets.CRATES_IO_ACCESS_TOKEN }}
-        if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS == 'false' }}
-
-      - name: Publish to crates.io
-        run: cargo publish
-        if: ${{ steps.whether-deployed.outputs.VERSION_EXISTS == 'false' }}
