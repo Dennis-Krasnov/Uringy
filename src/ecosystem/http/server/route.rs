@@ -38,9 +38,8 @@ impl Router {
     }
 
     /// ...
-    pub fn merge(self, other: Self) -> Self {
+    pub fn merge(self, _other: Self) -> Self {
         unimplemented!();
-        self
     }
 
     // TODO: middleware needs to iterate over existing values https://github.com/ibraheemdev/matchit/issues/9
@@ -194,9 +193,16 @@ impl MethodRouter {
         self.allowed_methods.push_str(method);
         self.allowed_methods.shrink_to_fit();
 
-        // TODO: include Allow header
-        self.other_method_allowed =
-            Some((|r: Responder| r.send(StatusCode::MethodNotAllowed)).into_handler());
+        let allowed_methods = self.allowed_methods.clone();
+        self.other_method_allowed = Some(
+            (move |r: Responder| {
+                r.send((
+                    StatusCode::MethodNotAllowed,
+                    [("allow", allowed_methods.as_bytes())],
+                ))
+            })
+            .into_handler(),
+        );
     }
 
     fn route(&self, method: Method) -> Option<&Handler> {
@@ -438,17 +444,20 @@ mod tests {
     fn returns_405_when_wrong_method() {
         start(|| {
             let app = Router::new()
-                .route("/", post(|r: Responder| r.send(())))
-                .route("/", patch(|r: Responder| r.send(())));
+                .route("/", get(|r: Responder| r.send(())))
+                .route("/", options(|r: Responder| r.send(())));
             let mut client = FakeClient::from(app);
 
-            let response = client.get("/", ());
+            let response = client.post("/", ());
 
             assert_eq!(response.status, StatusCode::MethodNotAllowed);
-            //             assert_eq!(
-            //                 String::from_utf8_lossy(response.headers[http::header::ALLOW]),
-            //                 "post, patch"
-            //             );
+            let (_, allow) = response
+                .headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("allow"))
+                .unwrap();
+            dbg!(String::from_utf8_lossy(allow));
+            assert_eq!(String::from_utf8_lossy(allow), "GET, HEAD, OPTIONS");
         })
         .unwrap();
     }
