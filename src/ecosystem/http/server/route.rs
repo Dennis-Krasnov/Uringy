@@ -13,6 +13,7 @@ pub struct Router {
 
 impl Router {
     /// ...
+    #[inline]
     pub fn new() -> Self {
         Router {
             matcher: matchit::Router::new(),
@@ -21,16 +22,27 @@ impl Router {
     }
 
     /// Adds a route to the router.
-    pub fn route(mut self, path: &str, method_router: MethodRouter) -> Self {
+    #[inline]
+    pub fn route<ARGS>(
+        mut self,
+        method: Method,
+        path: &str,
+        handler: impl IntoHandler<ARGS>,
+    ) -> Self {
         match self.matcher.at_mut(path) {
-            Ok(found) => found.value.merge_inner(method_router),
-            Err(_) => self.matcher.insert(path, method_router).unwrap(),
+            Ok(found) => found.value.set(method, handler.into_handler()),
+            Err(_) => {
+                let mut method_router = MethodRouter::new();
+                method_router.set(method, handler.into_handler());
+                self.matcher.insert(path, method_router).unwrap()
+            }
         }
 
         self
     }
 
     /// Override the the default fallback service that's called if no routes match the request.
+    #[inline]
     pub fn fallback<ARGS>(mut self, handler: impl IntoHandler<ARGS> + 'static) -> Self {
         // TODO: decide what to do when merging/nesting two routers.
         self.fallback = handler.into_handler();
@@ -38,6 +50,7 @@ impl Router {
     }
 
     /// ...
+    #[inline]
     pub fn merge(self, _other: Self) -> Self {
         unimplemented!();
     }
@@ -156,36 +169,6 @@ impl MethodRouter {
         self.append_allowed_method("PATCH");
     }
 
-    fn merge_inner(&mut self, other: Self) {
-        if let Some(handler) = other.get {
-            self.set_get(handler);
-        }
-        if let Some(handler) = other.post {
-            self.set_post(handler);
-        }
-        if let Some(handler) = other.head {
-            self.set_head(handler);
-        }
-        if let Some(handler) = other.put {
-            self.set_put(handler);
-        }
-        if let Some(handler) = other.delete {
-            self.set_delete(handler);
-        }
-        if let Some(handler) = other.connect {
-            self.set_connect(handler);
-        }
-        if let Some(handler) = other.options {
-            self.set_options(handler);
-        }
-        if let Some(handler) = other.trace {
-            self.set_trace(handler);
-        }
-        if let Some(handler) = other.patch {
-            self.set_patch(handler);
-        }
-    }
-
     fn append_allowed_method(&mut self, method: &str) {
         if !self.allowed_methods.is_empty() {
             self.allowed_methods.push_str(", ");
@@ -205,6 +188,50 @@ impl MethodRouter {
         );
     }
 
+    fn set(&mut self, method: Method, handler: Handler) {
+        match method {
+            Method::Get => self.set_get(handler),
+            Method::Post => self.set_post(handler),
+            Method::Head => self.set_head(handler),
+            Method::Put => self.set_put(handler),
+            Method::Delete => self.set_delete(handler),
+            Method::Connect => self.set_connect(handler),
+            Method::Options => self.set_options(handler),
+            Method::Trace => self.set_trace(handler),
+            Method::Patch => self.set_patch(handler),
+        }
+    }
+
+    // fn merge(&mut self, other: Self) {
+    //     if let Some(handler) = other.get {
+    //         self.set_get(handler);
+    //     }
+    //     if let Some(handler) = other.post {
+    //         self.set_post(handler);
+    //     }
+    //     if let Some(handler) = other.head {
+    //         self.set_head(handler);
+    //     }
+    //     if let Some(handler) = other.put {
+    //         self.set_put(handler);
+    //     }
+    //     if let Some(handler) = other.delete {
+    //         self.set_delete(handler);
+    //     }
+    //     if let Some(handler) = other.connect {
+    //         self.set_connect(handler);
+    //     }
+    //     if let Some(handler) = other.options {
+    //         self.set_options(handler);
+    //     }
+    //     if let Some(handler) = other.trace {
+    //         self.set_trace(handler);
+    //     }
+    //     if let Some(handler) = other.patch {
+    //         self.set_patch(handler);
+    //     }
+    // }
+
     fn route(&self, method: Method) -> Option<&Handler> {
         match method {
             Method::Get => self.get.as_ref(),
@@ -221,115 +248,9 @@ impl MethodRouter {
     }
 }
 
-/// Route GET requests to the given handler.
-///
-/// Requests with the GET method:
-/// - Retrieve data at the target resource.
-/// - Shouldn't mutate.
-/// - Shouldn't have a body.
-#[inline]
-pub fn get<ARGS>(handler: impl IntoHandler<ARGS> + 'static) -> MethodRouter {
-    let mut method_router = MethodRouter::new();
-    method_router.set_get(handler.into_handler());
-    method_router
-}
-
-/// Route POST requests to the given handler.
-///
-/// Requests with the POST method:
-/// - Submit data to the target resource.
-/// - Aren't idempotent.
-#[inline]
-pub fn post<ARGS>(handler: impl IntoHandler<ARGS> + 'static) -> MethodRouter {
-    let mut method_router = MethodRouter::new();
-    method_router.set_post(handler.into_handler());
-    method_router
-}
-
-/// Route HEAD requests to the given handler.
-///
-/// Requests with the HEAD method:
-/// - Are identical to GET requests, but without the response body.
-#[inline]
-pub fn head<ARGS>(handler: impl IntoHandler<ARGS> + 'static) -> MethodRouter {
-    let mut method_router = MethodRouter::new();
-    method_router.set_head(handler.into_handler());
-    method_router
-}
-
-/// Route PUT requests to the given handler.
-///
-/// Requests with the PUT method:
-/// - Replace the target resource.
-#[inline]
-pub fn put<ARGS>(handler: impl IntoHandler<ARGS> + 'static) -> MethodRouter {
-    let mut method_router = MethodRouter::new();
-    method_router.set_put(handler.into_handler());
-    method_router
-}
-
-/// Route DELETE requests to the given handler.
-///
-/// Requests with the DELETE method:
-/// - Delete the target resource.
-/// - Shouldn't have a body.
-#[inline]
-pub fn delete<ARGS>(handler: impl IntoHandler<ARGS> + 'static) -> MethodRouter {
-    let mut method_router = MethodRouter::new();
-    method_router.set_delete(handler.into_handler());
-    method_router
-}
-
-/// Route CONNECT requests to the given handler.
-///
-/// Requests with the CONNECT method:
-/// - Establish a tunnel to the server identified by the target resource.
-/// - Shouldn't have a body.
-#[inline]
-pub fn connect<ARGS>(handler: impl IntoHandler<ARGS> + 'static) -> MethodRouter {
-    let mut method_router = MethodRouter::new();
-    method_router.set_connect(handler.into_handler());
-    method_router
-}
-
-/// Route OPTIONS requests to the given handler.
-///
-/// Requests with OPTIONS method:
-/// - Describe the endpoints the server supports.
-/// - Shouldn't have a body.
-#[inline]
-pub fn options<ARGS>(handler: impl IntoHandler<ARGS> + 'static) -> MethodRouter {
-    let mut method_router = MethodRouter::new();
-    method_router.set_options(handler.into_handler());
-    method_router
-}
-
-/// Route TRACE requests to the given handler.
-///
-/// Requests with the TRACE method:
-/// - Perform a message loop-back test along the path to the target resource.
-/// - Must not have a body.
-#[inline]
-pub fn trace<ARGS>(handler: impl IntoHandler<ARGS> + 'static) -> MethodRouter {
-    let mut method_router = MethodRouter::new();
-    method_router.set_trace(handler.into_handler());
-    method_router
-}
-
-/// Route PATCH requests to the given handler.
-///
-/// Requests with the PATCH method:
-/// - Partially update a resource.
-/// - Aren't idempotent.
-#[inline]
-pub fn patch<ARGS>(handler: impl IntoHandler<ARGS> + 'static) -> MethodRouter {
-    let mut method_router = MethodRouter::new();
-    method_router.set_patch(handler.into_handler());
-    method_router
-}
-
 #[cfg(test)]
 mod tests {
+    use crate::ecosystem::http::payload::Method;
     use crate::ecosystem::http::payload::StatusCode;
     use crate::ecosystem::http::server::fake_client::FakeClient;
     use crate::ecosystem::http::Responder;
@@ -340,7 +261,7 @@ mod tests {
     #[test]
     fn smoke() {
         start(|| {
-            let app = Router::new().route("/", get(|r: Responder| r.send("hello")));
+            let app = Router::new().route(Method::Get, "/", |r: Responder| r.send("hello"));
             let mut client = FakeClient::from(app);
 
             let response = client.get("/", ());
@@ -353,7 +274,7 @@ mod tests {
     #[test]
     fn handles_static_route() {
         start(|| {
-            let app = Router::new().route("/", get(|r: Responder| r.send(())));
+            let app = Router::new().route(Method::Get, "/", |r: Responder| r.send(()));
             let mut client = FakeClient::from(app);
 
             let response = client.get("/", ());
@@ -367,8 +288,12 @@ mod tests {
     fn prioritizes_static_over_dynamic_route() {
         start(|| {
             let app = Router::new()
-                .route("/*dyn", get(|r: Responder| r.send(StatusCode::Forbidden)))
-                .route("/", get(|r: Responder| r.send(StatusCode::Accepted)));
+                .route(Method::Get, "/*dyn", |r: Responder| {
+                    r.send(StatusCode::Forbidden)
+                })
+                .route(Method::Get, "/", |r: Responder| {
+                    r.send(StatusCode::Accepted)
+                });
             let mut client = FakeClient::from(app);
 
             let response = client.get("/", ());
@@ -382,8 +307,8 @@ mod tests {
     fn merges_two_routes_with_same_path_but_different_methods() {
         start(|| {
             let app = Router::new()
-                .route("/", post(|r: Responder| r.send(())))
-                .route("/", put(|r: Responder| r.send(())));
+                .route(Method::Post, "/", |r: Responder| r.send(()))
+                .route(Method::Put, "/", |r: Responder| r.send(()));
             let mut client = FakeClient::from(app);
 
             assert_eq!(client.post("/", ()).status, StatusCode::Ok);
@@ -397,8 +322,8 @@ mod tests {
     fn fails_to_create_duplicate_static_route() {
         start(|| {
             Router::new()
-                .route("/", get(|r: Responder| r.send(())))
-                .route("/", get(|r: Responder| r.send(())));
+                .route(Method::Get, "/", |r: Responder| r.send(()))
+                .route(Method::Get, "/", |r: Responder| r.send(()));
         })
         .unwrap();
     }
@@ -408,8 +333,8 @@ mod tests {
     fn fails_to_create_duplicate_dynamic_route() {
         start(|| {
             Router::new()
-                .route("/*dyn1", get(|r: Responder| r.send(())))
-                .route("/*dyn2", get(|r: Responder| r.send(())));
+                .route(Method::Get, "/*dyn1", |r: Responder| r.send(()))
+                .route(Method::Get, "/*dyn2", |r: Responder| r.send(()));
         })
         .unwrap();
     }
@@ -444,8 +369,8 @@ mod tests {
     fn returns_405_when_wrong_method() {
         start(|| {
             let app = Router::new()
-                .route("/", get(|r: Responder| r.send(())))
-                .route("/", options(|r: Responder| r.send(())));
+                .route(Method::Get, "/", |r: Responder| r.send(()))
+                .route(Method::Options, "/", |r: Responder| r.send(()));
             let mut client = FakeClient::from(app);
 
             let response = client.post("/", ());
@@ -466,7 +391,7 @@ mod tests {
     #[ignore]
     fn head_defers_to_get() {
         start(|| {
-            let app = Router::new().route("/", get(|r: Responder| r.send("hello")));
+            let app = Router::new().route(Method::Get, "/", |r: Responder| r.send("hello"));
             let mut client = FakeClient::from(app);
 
             let response = client.head("/", ());
@@ -481,8 +406,12 @@ mod tests {
     fn custom_head_overrides_get() {
         start(|| {
             let app = Router::new()
-                .route("/", get(|r: Responder| r.send(StatusCode::Forbidden)))
-                .route("/", head(|r: Responder| r.send(StatusCode::Accepted)));
+                .route(Method::Get, "/", |r: Responder| {
+                    r.send(StatusCode::Forbidden)
+                })
+                .route(Method::Head, "/", |r: Responder| {
+                    r.send(StatusCode::Accepted)
+                });
             let mut client = FakeClient::from(app);
 
             let response = client.head("/", ());

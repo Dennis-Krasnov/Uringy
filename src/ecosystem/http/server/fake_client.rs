@@ -125,12 +125,11 @@ impl<'a> From<&'a OwnedResponse> for Response<'a> {
 mod tests {
     use super::*;
     use crate::ecosystem::http::payload::StatusCode;
-    use crate::ecosystem::http::server::route::get;
     use crate::ecosystem::http::Responder;
 
     #[test]
     fn smoke() {
-        let app = Router::new().route("/", get(|r: Responder| r.send(())));
+        let app = Router::new().route(Method::Get, "/", |r: Responder| r.send(()));
         let mut client = FakeClient::from(app);
 
         let response = client.get("/", ());
@@ -141,7 +140,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn panics_when_no_response_sent() {
-        let app = Router::new().route("/", get(|_| {}));
+        let app = Router::new().route(Method::Get, "/", |_| {});
         let mut client = FakeClient::from(app);
 
         client.get("/", ());

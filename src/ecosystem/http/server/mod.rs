@@ -192,10 +192,11 @@ fn serialize(mut writer: impl Write, response: Response) -> crate::IoResult<()> 
 
 #[cfg(test)]
 mod tests {
+    use crate::ecosystem::http::payload::Method;
     use std::io::{Read, Write};
     use std::net::Ipv4Addr;
 
-    use crate::ecosystem::http::server::route::{get, Router};
+    use crate::ecosystem::http::server::route::Router;
     use crate::ecosystem::http::Responder;
     use crate::net::tcp;
     use crate::runtime::{spawn, start};
@@ -209,7 +210,7 @@ mod tests {
             let server_addr = listener.local_addr().unwrap();
 
             let server = spawn(move || {
-                let app = Router::new().route("/", get(index));
+                let app = Router::new().route(Method::Get, "/", index);
                 serve(app, listener.into_incoming());
             });
 
@@ -242,7 +243,7 @@ mod tests {
             let server_addr = listener.local_addr().unwrap();
 
             let server = spawn(move || {
-                let app = Router::new().route("/", get(index));
+                let app = Router::new().route(Method::Get, "/", index);
                 serve(app, listener.into_incoming());
             });
 

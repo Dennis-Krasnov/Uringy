@@ -126,14 +126,40 @@ impl<const N: usize, B: IntoBody> IntoResponse for ([(&str, &[u8]); N], B) {
 /// ...
 #[derive(Debug, Copy, Clone)]
 pub enum Method {
+    /// Requests with the GET method:
+    /// - Retrieve data at the target resource.
+    /// - Shouldn't mutate.
+    /// - Shouldn't have a body.
     Get,
+    /// Requests with the POST method:
+    /// - Submit data to the target resource.
+    /// - Aren't idempotent.
     Post,
+    /// Requests with the HEAD method:
+    /// - Are identical to GET requests, but without the response body.
     Head,
+    /// Requests with the PUT method:
+    /// - Replace the target resource.
     Put,
+    /// Requests with the DELETE method:
+    /// - Delete the target resource.
+    /// - Shouldn't have a body.
     Delete,
+    /// Requests with the CONNECT method:
+    /// - Establish a tunnel to the server identified by the target resource.
+    /// - Shouldn't have a body.
     Connect,
+    /// Requests with OPTIONS method:
+    /// - Describe the endpoints the server supports.
+    /// - Shouldn't have a body.
     Options,
+    /// Requests with the TRACE method:
+    /// - Perform a message loop-back test along the path to the target resource.
+    /// - Must not have a body.
     Trace,
+    /// Requests with the PATCH method:
+    /// - Partially update a resource.
+    /// - Aren't idempotent.
     Patch,
 }
 
