@@ -37,11 +37,11 @@ pub fn circular_buffer(length: usize) -> io::Result<(Data, Uninit)> {
     // setup virtual memory mappings
     let pointer = anonymous_mapping(2 * length)?;
     file_mapping(&file, pointer, length)?;
-    file_mapping(&file, unsafe { pointer.add(length) }, length)?;
+    file_mapping(&file, unsafe { pointer.byte_add(length) }, length)?;
 
     let state = Rc::new(RefCell::new(State {
         _file: file,
-        pointer: pointer as *mut u8,
+        pointer,
         head: 0,
         tail: 0,
         length,
@@ -97,7 +97,7 @@ impl ops::Deref for Data {
         let state = self.0.borrow();
         unsafe {
             slice::from_raw_parts(
-                state.pointer.add(p2_modulo(state.head, state.length)),
+                state.pointer.byte_add(p2_modulo(state.head, state.length)) as *const u8,
                 state.data_len(),
             )
         }
@@ -109,7 +109,7 @@ impl ops::DerefMut for Data {
         let state = self.0.borrow_mut();
         unsafe {
             slice::from_raw_parts_mut(
-                state.pointer.add(p2_modulo(state.head, state.length)),
+                state.pointer.byte_add(p2_modulo(state.head, state.length)) as *mut u8,
                 state.data_len(),
             )
         }
@@ -147,7 +147,7 @@ impl ops::Deref for Uninit {
         let state = self.0.borrow();
         unsafe {
             slice::from_raw_parts(
-                state.pointer.add(p2_modulo(state.tail, state.length)),
+                state.pointer.byte_add(p2_modulo(state.tail, state.length)) as *const u8,
                 state.uninit_len(),
             )
         }
@@ -159,7 +159,7 @@ impl ops::DerefMut for Uninit {
         let state = self.0.borrow_mut();
         unsafe {
             slice::from_raw_parts_mut(
-                state.pointer.add(p2_modulo(state.tail, state.length)),
+                state.pointer.byte_add(p2_modulo(state.tail, state.length)) as *mut u8,
                 state.uninit_len(),
             )
         }
@@ -169,7 +169,7 @@ impl ops::DerefMut for Uninit {
 #[derive(Debug)]
 struct State {
     _file: std::fs::File,
-    pointer: *mut u8,
+    pointer: *mut ffi::c_void,
     head: usize,
     tail: usize,
     length: usize,
@@ -187,10 +187,9 @@ impl State {
 
 impl Drop for State {
     fn drop(&mut self) {
-        let pointer = self.pointer as *mut ffi::c_void;
-        let _ = remove_mapping(pointer, 2 * self.length);
-        let _ = remove_mapping(pointer, self.length);
-        let _ = remove_mapping(unsafe { pointer.add(self.length) }, self.length);
+        let _ = remove_mapping(self.pointer, 2 * self.length);
+        let _ = remove_mapping(self.pointer, self.length);
+        let _ = remove_mapping(unsafe { self.pointer.byte_add(self.length) }, self.length);
     }
 }
 

@@ -10,7 +10,7 @@ keywords = ["io", "async", "non-blocking", "linux", "io_uring"]
 license = "0BSD"
 authors = ["Dennis Krasnov <dennis@krasnov.dev>"]
 edition = "2021"
-rust-version = "1.73.0" # found with cargo msrv
+rust-version = "1.75.0" # found with cargo msrv
 
 [workspace]
 members = [
