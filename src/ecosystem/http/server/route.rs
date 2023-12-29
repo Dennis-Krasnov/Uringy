@@ -324,11 +324,12 @@ pub fn patch<ARGS>(handler: impl IntoHandler<ARGS> + 'static) -> MethodRouter {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::ecosystem::http::payload::StatusCode;
     use crate::ecosystem::http::server::fake_client::FakeClient;
     use crate::ecosystem::http::Responder;
     use crate::runtime::start;
+
+    use super::*;
 
     #[test]
     fn smoke() {
@@ -367,6 +368,20 @@ mod tests {
             let response = client.get("/", ());
 
             assert_eq!(response.status, StatusCode::Accepted);
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn merges_two_routes_with_same_path_but_different_methods() {
+        start(|| {
+            let app = Router::new()
+                .route("/", post(|r: Responder| r.send(())))
+                .route("/", put(|r: Responder| r.send(())));
+            let mut client = FakeClient::from(app);
+
+            assert_eq!(client.post("/", ()).status, StatusCode::Ok);
+            assert_eq!(client.put("/", ()).status, StatusCode::Ok);
         })
         .unwrap();
     }
