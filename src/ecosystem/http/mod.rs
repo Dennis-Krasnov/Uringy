@@ -38,8 +38,8 @@ pub struct Responder(Box<dyn Respond>);
 
 impl Responder {
     /// ...
-    pub fn send(self, response: impl payload::IntoResponse) {
-        self.0.respond(response.into_response());
+    pub fn send(self, response: impl payload::AsResponse) {
+        self.0.respond(response.as_response());
     }
 }
 

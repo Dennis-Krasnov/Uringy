@@ -1,11 +1,11 @@
 //! ...
 
-use crate::ecosystem::http::payload::IntoBody;
+use crate::ecosystem::http::payload::AsBody;
 
 /// ...
 pub struct Html<T>(pub T);
 
-impl<T: IntoBody> IntoBody for Html<T> {
+impl<T: AsBody> AsBody for Html<T> {
     fn contents(&self) -> &[u8] {
         self.0.contents()
     }
@@ -18,7 +18,7 @@ impl<T: IntoBody> IntoBody for Html<T> {
 /// ...
 pub struct JavaScript<T>(pub T);
 
-impl<T: IntoBody> IntoBody for JavaScript<T> {
+impl<T: AsBody> AsBody for JavaScript<T> {
     fn contents(&self) -> &[u8] {
         self.0.contents()
     }
@@ -31,7 +31,7 @@ impl<T: IntoBody> IntoBody for JavaScript<T> {
 /// ...
 pub struct Css<T>(pub T);
 
-impl<T: IntoBody> IntoBody for Css<T> {
+impl<T: AsBody> AsBody for Css<T> {
     fn contents(&self) -> &[u8] {
         self.0.contents()
     }
@@ -44,7 +44,7 @@ impl<T: IntoBody> IntoBody for Css<T> {
 /// ...
 pub struct Png<T>(pub T);
 
-impl<T: IntoBody> IntoBody for Png<T> {
+impl<T: AsBody> AsBody for Png<T> {
     fn contents(&self) -> &[u8] {
         self.0.contents()
     }
@@ -57,7 +57,7 @@ impl<T: IntoBody> IntoBody for Png<T> {
 /// ...
 pub struct Woff2<T>(pub T);
 
-impl<T: IntoBody> IntoBody for Woff2<T> {
+impl<T: AsBody> AsBody for Woff2<T> {
     fn contents(&self) -> &[u8] {
         self.0.contents()
     }

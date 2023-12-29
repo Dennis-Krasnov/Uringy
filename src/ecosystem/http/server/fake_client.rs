@@ -1,6 +1,6 @@
 //! ...
 
-use crate::ecosystem::http::payload::{IntoRequest, Method, Response, StatusCode};
+use crate::ecosystem::http::payload::{AsRequest, Method, Response, StatusCode};
 use crate::ecosystem::http::server::route::Router;
 use crate::ecosystem::http::{Respond, Responder};
 use crate::sync::channel;
@@ -13,55 +13,55 @@ pub struct FakeClient {
 
 impl FakeClient {
     /// Make a GET request.
-    pub fn get(&mut self, path: &str, request: impl IntoRequest) -> Response {
+    pub fn get(&mut self, path: &str, request: impl AsRequest) -> Response {
         self.request(Method::Get, path, request)
     }
 
     /// Make a POST request.
-    pub fn post(&mut self, path: &str, request: impl IntoRequest) -> Response {
+    pub fn post(&mut self, path: &str, request: impl AsRequest) -> Response {
         self.request(Method::Post, path, request)
     }
 
     /// Make a HEAD request.
-    pub fn head(&mut self, path: &str, request: impl IntoRequest) -> Response {
+    pub fn head(&mut self, path: &str, request: impl AsRequest) -> Response {
         self.request(Method::Head, path, request)
     }
 
     /// Make a PUT request.
-    pub fn put(&mut self, path: &str, request: impl IntoRequest) -> Response {
+    pub fn put(&mut self, path: &str, request: impl AsRequest) -> Response {
         self.request(Method::Put, path, request)
     }
 
     /// Make a DELETE request.
-    pub fn delete(&mut self, path: &str, request: impl IntoRequest) -> Response {
+    pub fn delete(&mut self, path: &str, request: impl AsRequest) -> Response {
         self.request(Method::Delete, path, request)
     }
 
     /// Make a CONNECT request.
-    pub fn connect(&mut self, path: &str, request: impl IntoRequest) -> Response {
+    pub fn connect(&mut self, path: &str, request: impl AsRequest) -> Response {
         self.request(Method::Connect, path, request)
     }
 
     /// Make a OPTIONS request.
-    pub fn options(&mut self, path: &str, request: impl IntoRequest) -> Response {
+    pub fn options(&mut self, path: &str, request: impl AsRequest) -> Response {
         self.request(Method::Options, path, request)
     }
 
     /// Make a TRACE request.
-    pub fn trace(&mut self, path: &str, request: impl IntoRequest) -> Response {
+    pub fn trace(&mut self, path: &str, request: impl AsRequest) -> Response {
         self.request(Method::Trace, path, request)
     }
 
     /// Make a PATCH request.
-    pub fn patch(&mut self, path: &str, request: impl IntoRequest) -> Response {
+    pub fn patch(&mut self, path: &str, request: impl AsRequest) -> Response {
         self.request(Method::Patch, path, request)
     }
 
     /// Make a request with the given method.
-    pub fn request(&mut self, method: Method, path: &str, request: impl IntoRequest) -> Response {
+    pub fn request(&mut self, method: Method, path: &str, request: impl AsRequest) -> Response {
         let (tx, rx) = channel::unbounded(); // TODO: channel::oneshot
         let r = Responder(Box::new(FakeResponder(tx)));
-        let request = request.into_request(method, path, ""); // FIXME: take query params from builder
+        let request = request.as_request(method, path, "");
         self.router.handle(r, &request);
         self.response = Some(rx.recv().expect("must respond..."));
         Response::from(self.response.as_ref().unwrap())

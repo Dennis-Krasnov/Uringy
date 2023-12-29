@@ -14,13 +14,13 @@ pub struct Request<'a> {
 }
 
 /// ...
-pub trait IntoRequest {
+pub trait AsRequest {
     /// ...
-    fn into_request<'a>(&'a self, method: Method, path: &'a str, query: &'a str) -> Request;
+    fn as_request<'a>(&'a self, method: Method, path: &'a str, query: &'a str) -> Request<'a>;
 }
 
-impl<B: IntoBody> IntoRequest for B {
-    fn into_request<'a>(&'a self, method: Method, path: &'a str, query: &'a str) -> Request {
+impl<B: AsBody> AsRequest for B {
+    fn as_request<'a>(&'a self, method: Method, path: &'a str, query: &'a str) -> Request<'a> {
         Request {
             method,
             path,
@@ -58,13 +58,13 @@ impl Response<'_> {
 /// - individual `impl IntoResponseParts`.
 /// - individual `impl IntoBody`.
 /// - tuple of (0..1 `StatusCode`, 0..15 `impl IntoResponseParts`, 0..1 `impl IntoBody`).
-pub trait IntoResponse {
+pub trait AsResponse {
     /// ...
-    fn into_response(&self) -> Response; // TODO: returns tuple of parts
+    fn as_response(&self) -> Response; // TODO: returns tuple of parts
 }
 
-impl IntoResponse for StatusCode {
-    fn into_response(&self) -> Response {
+impl AsResponse for StatusCode {
+    fn as_response(&self) -> Response {
         Response {
             status: self.clone(),
             headers: Vec::new(),
@@ -73,8 +73,8 @@ impl IntoResponse for StatusCode {
     }
 }
 
-impl<B: IntoBody> IntoResponse for B {
-    fn into_response(&self) -> Response {
+impl<B: AsBody> AsResponse for B {
+    fn as_response(&self) -> Response {
         let mut headers = Vec::new();
         // headers.push((
         //     "content-length",
@@ -93,8 +93,8 @@ impl<B: IntoBody> IntoResponse for B {
     }
 }
 
-impl<const N: usize> IntoResponse for (StatusCode, [(&str, &[u8]); N]) {
-    fn into_response(&self) -> Response {
+impl<const N: usize> AsResponse for (StatusCode, [(&str, &[u8]); N]) {
+    fn as_response(&self) -> Response {
         let (status, headers) = self;
 
         Response {
@@ -105,8 +105,8 @@ impl<const N: usize> IntoResponse for (StatusCode, [(&str, &[u8]); N]) {
     }
 }
 
-impl<const N: usize, B: IntoBody> IntoResponse for ([(&str, &[u8]); N], B) {
-    fn into_response(&self) -> Response {
+impl<const N: usize, B: AsBody> AsResponse for ([(&str, &[u8]); N], B) {
+    fn as_response(&self) -> Response {
         let (headers, body) = self;
 
         let mut headers = Vec::from(headers);
@@ -210,7 +210,7 @@ impl From<StatusCode> for u16 {
 }
 
 /// ...
-pub trait IntoBody {
+pub trait AsBody {
     /// ...
     fn contents(&self) -> &[u8];
 
@@ -218,7 +218,7 @@ pub trait IntoBody {
     fn content_type(&self) -> Option<&str>;
 }
 
-impl IntoBody for () {
+impl AsBody for () {
     fn contents(&self) -> &[u8] {
         &[]
     }
@@ -228,7 +228,7 @@ impl IntoBody for () {
     }
 }
 
-impl IntoBody for &str {
+impl AsBody for &str {
     fn contents(&self) -> &[u8] {
         self.as_bytes()
     }
@@ -238,7 +238,7 @@ impl IntoBody for &str {
     }
 }
 
-impl IntoBody for &[u8] {
+impl AsBody for &[u8] {
     fn contents(&self) -> &[u8] {
         self
     }
@@ -248,7 +248,7 @@ impl IntoBody for &[u8] {
     }
 }
 
-impl<const N: usize> IntoBody for &[u8; N] {
+impl<const N: usize> AsBody for &[u8; N] {
     fn contents(&self) -> &[u8] {
         *self
     }
@@ -263,25 +263,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn into_request_impls() {
-        ().into_request(Method::Get, "/", "");
-        "".into_request(Method::Get, "/", "");
-        "".as_bytes().into_request(Method::Get, "/", "");
+    fn as_request_impls() {
+        ().as_request(Method::Get, "/", "");
+        "".as_request(Method::Get, "/", "");
+        "".as_bytes().as_request(Method::Get, "/", "");
     }
 
     #[test]
-    fn into_response_impls() {
-        StatusCode::Ok.into_response();
+    fn as_response_impls() {
+        StatusCode::Ok.as_response();
 
-        ([], "").into_response();
+        ([], "").as_response();
 
-        ().into_response();
-        "".into_response();
-        "".as_bytes().into_response();
+        ().as_response();
+        "".as_response();
+        "".as_bytes().as_response();
     }
 
     #[test]
-    fn into_body_impls() {
+    fn as_body_impls() {
         ().contents();
         "".contents();
         "".as_bytes().contents();
