@@ -101,7 +101,7 @@ There are currently no cargo flags.
 | cancellation                                                                                | using esoteric unix signals                | first class, voluntary                       | leaks memory, [causes bugs](https://docs.rs/tokio/latest/tokio/macro.select.html#cancellation-safety)                                       |
 
 ## Supported Rust Versions
-The MSRV is 1.70.0 (released in June 2023).
+The MSRV is 1.75.0 (released in December 2023).
 Check your Rust version by running `rustc --version` in a terminal.
 
 ## Supported Linux Kernel Versions
