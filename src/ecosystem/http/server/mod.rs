@@ -6,9 +6,9 @@ use std::rc::Rc;
 
 use crate::circular_buffer;
 use crate::circular_buffer::circular_buffer;
-use crate::ecosystem::http::{Respond, Responder};
 use crate::ecosystem::http::payload::{Request, Response};
 use crate::ecosystem::http::server::route::Router;
+use crate::ecosystem::http::{Respond, Responder};
 use crate::runtime::{is_cancelled, park, spawn, Waker};
 
 pub mod fake_client;
@@ -17,7 +17,7 @@ pub mod route;
 /// ...
 pub fn serve<W: Write + 'static, R: Read + 'static>(
     router: Router,
-    connections: impl Iterator<Item=(W, R)>,
+    connections: impl Iterator<Item = (W, R)>,
 ) {
     // TODO: don't need Rc for router when using scoped spawn
     let router = Rc::new(router);
@@ -33,7 +33,7 @@ pub fn serve<W: Write + 'static, R: Read + 'static>(
 
 fn handle_connection(
     router: &Router,
-    mut w: impl Write + 'static,
+    w: impl Write + 'static,
     r: impl Read + 'static,
 ) -> crate::IoResult<()> {
     // TODO: pool to reuse
@@ -195,8 +195,8 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::Ipv4Addr;
 
-    use crate::ecosystem::http::Responder;
     use crate::ecosystem::http::server::route::{get, Router};
+    use crate::ecosystem::http::Responder;
     use crate::net::tcp;
     use crate::runtime::{spawn, start};
 
@@ -228,7 +228,7 @@ mod tests {
 
             server.cancel();
         })
-            .unwrap();
+        .unwrap();
     }
 
     fn index(r: Responder) {
@@ -260,7 +260,7 @@ mod tests {
 
             server.cancel();
         })
-            .unwrap();
+        .unwrap();
     }
 
     mod partial_uri {
