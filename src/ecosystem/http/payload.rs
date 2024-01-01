@@ -1,33 +1,106 @@
 //! ...
 
-// FIXME: only server should have path variables (fake client directly against fn has none...) (Option?)
-
+use ahash::HashMapExt;
+use std::cell::OnceCell;
 use std::str::FromStr;
 
 #[derive(Debug)]
 pub struct Request<'a> {
-    pub method: Method,
-    pub path: &'a str,
-    pub query: &'a str,
-    pub headers: Vec<(&'a str, &'a [u8])>,
-    pub body: &'a [u8],
+    method: Method,
+    path: &'a str,
+    query: &'a str,
+    query_map: OnceCell<ahash::HashMap<&'a str, &'a str>>,
+    headers: Vec<(&'a str, &'a [u8])>,
+    header_map: OnceCell<ahash::HashMap<&'a str, &'a [u8]>>,
+    body: &'a [u8],
 }
 
-/// ...
-pub trait AsRequest {
-    /// ...
-    fn as_request<'a>(&'a self, method: Method, path: &'a str, query: &'a str) -> Request<'a>;
-}
-
-impl<B: AsBody> AsRequest for B {
-    fn as_request<'a>(&'a self, method: Method, path: &'a str, query: &'a str) -> Request<'a> {
+impl<'a> Request<'a> {
+    pub(crate) fn new(
+        method: Method,
+        path: &'a str,
+        query: &'a str,
+        headers: Vec<(&'a str, &'a [u8])>,
+        body: &'a [u8],
+    ) -> Self {
         Request {
             method,
             path,
             query,
-            headers: Vec::new(),
-            body: self.contents(),
+            query_map: OnceCell::new(),
+            headers,
+            header_map: OnceCell::new(),
+            body,
         }
+    }
+
+    /// ...
+    #[inline]
+    pub fn method(&self) -> Method {
+        self.method
+    }
+
+    /// ...
+    #[inline]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// ...
+    #[inline]
+    pub fn path_param(&self, _name: &str) -> &str {
+        todo!()
+    }
+
+    /// ...
+    #[inline]
+    pub fn raw_query(&self) -> &str {
+        &self.query
+    }
+
+    /// ... lazy
+    #[inline]
+    pub fn query_params(&self) -> &ahash::HashMap<&str, &str> {
+        self.query_map
+            .get_or_init(|| serde_urlencoded::from_str(self.query).unwrap())
+    }
+
+    /// ...
+    #[inline]
+    pub fn query(&self, name: &str) -> Option<&str> {
+        self.query_params().get(name).map(|v| *v)
+    }
+
+    /// ...
+    #[inline]
+    pub fn raw_headers(&self) -> &Vec<(&str, &[u8])> {
+        &self.headers
+    }
+
+    /// ... lazy
+    /// ignores duplicates (takes the last)
+    #[inline]
+    pub fn headers(&self) -> &ahash::HashMap<&str, &[u8]> {
+        self.header_map.get_or_init(|| {
+            let mut map = ahash::HashMap::with_capacity(self.headers.len());
+            for (name, value) in &self.headers {
+                map.insert(*name, *value);
+            }
+            map
+        })
+    }
+
+    /// ...
+    /// ignores duplicates (takes the last)
+    #[inline]
+    pub fn header(&self, name: &str) -> Option<&[u8]> {
+        self.headers().get(name).map(|v| *v)
+    }
+
+    /// ...
+    #[inline]
+    pub fn body(&self) -> &[u8] {
+        self.body
     }
 }
 
@@ -40,86 +113,13 @@ pub struct Response<'a> {
 }
 
 impl Response<'_> {
-    // /// ...
-    // pub fn status(&self) -> StatusCode {
-    //     self.status
-    // }
-    //
-    // /// ...
-    // pub fn body(&self) -> &[u8] {
-    //     self.body
-    // }
-}
-
-/// Flexible construction of `Response`.
-///
-/// Accepts:
-/// - individual `StatusCode`.
-/// - individual `impl IntoResponseParts`.
-/// - individual `impl IntoBody`.
-/// - tuple of (0..1 `StatusCode`, 0..15 `impl IntoResponseParts`, 0..1 `impl IntoBody`).
-pub trait AsResponse {
     /// ...
-    fn as_response(&self) -> Response; // TODO: returns tuple of parts
-}
-
-impl AsResponse for StatusCode {
-    fn as_response(&self) -> Response {
-        Response {
-            status: self.clone(),
-            headers: Vec::new(),
-            body: &[],
-        }
-    }
-}
-
-impl<B: AsBody> AsResponse for B {
-    fn as_response(&self) -> Response {
-        let mut headers = Vec::new();
-        // headers.push((
-        //     "content-length",
-        //     self.contents().len().to_string().as_bytes(),
-        // ));
-        // TODO: override if already exists
-        if let Some(content_type) = self.content_type() {
-            headers.push(("content-type", content_type.as_bytes()));
-        }
-
-        Response {
-            status: StatusCode::Ok,
-            headers,
-            body: self.contents(),
-        }
-    }
-}
-
-impl<const N: usize> AsResponse for (StatusCode, [(&str, &[u8]); N]) {
-    fn as_response(&self) -> Response {
-        let (status, headers) = self;
-
-        Response {
-            status: status.clone(),
-            headers: Vec::from(headers),
-            body: &[],
-        }
-    }
-}
-
-impl<const N: usize, B: AsBody> AsResponse for ([(&str, &[u8]); N], B) {
-    fn as_response(&self) -> Response {
-        let (headers, body) = self;
-
-        let mut headers = Vec::from(headers);
-
-        if let Some(content_type) = body.content_type() {
-            headers.push(("content-type", content_type.as_bytes()));
-        }
-
-        Response {
-            status: StatusCode::Ok,
-            headers,
-            body: body.contents(),
-        }
+    #[inline]
+    pub fn header(&self, name: &str) -> Option<&[u8]> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| *v)
     }
 }
 
@@ -242,6 +242,16 @@ impl AsBody for &str {
     }
 }
 
+impl AsBody for String {
+    fn contents(&self) -> &[u8] {
+        self.as_bytes()
+    }
+
+    fn content_type(&self) -> Option<&str> {
+        Some("text/plain")
+    }
+}
+
 impl AsBody for &[u8] {
     fn contents(&self) -> &[u8] {
         self
@@ -265,24 +275,6 @@ impl<const N: usize> AsBody for &[u8; N] {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn as_request_impls() {
-        ().as_request(Method::Get, "/", "");
-        "".as_request(Method::Get, "/", "");
-        "".as_bytes().as_request(Method::Get, "/", "");
-    }
-
-    #[test]
-    fn as_response_impls() {
-        StatusCode::Ok.as_response();
-
-        ([], "").as_response();
-
-        ().as_response();
-        "".as_response();
-        "".as_bytes().as_response();
-    }
 
     #[test]
     fn as_body_impls() {

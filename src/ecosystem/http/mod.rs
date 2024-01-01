@@ -20,7 +20,8 @@
 //! HTTP 2/3 aren't supported since they aren't compatible with the zero copy design.
 //! Use a reverse proxy like Nginx to support these newer protocols, remember to enable keepalive to the origin.
 
-use crate::ecosystem::http::payload::Request;
+use crate::ecosystem::http::payload::{Request, Response, StatusCode};
+use std::marker::PhantomData;
 
 pub mod client;
 pub mod payload;
@@ -28,18 +29,61 @@ pub mod server;
 
 pub mod middleware;
 pub mod mime;
-// mod macros;
 
 /// Dynamically dispatched handle to the next step in processing the request.
-pub type Handler = Box<dyn Fn(Responder, &Request)>;
+pub type Handler<S> = Box<dyn Fn(Responder, &Request, &S)>;
 
 /// Dynamically dispatched handle to the next step in processing the response.
-pub struct Responder(Box<dyn Respond>);
+pub struct Responder<'a, TS = DefaultStatusCode> {
+    respond: Box<dyn Respond>,
+    type_state: PhantomData<TS>,
+    status: StatusCode,
+    headers: Vec<(&'a str, &'a [u8])>,
+}
 
-impl Responder {
+/// Type state for `Responder`.
+pub struct DefaultStatusCode;
+pub struct CustomStatusCode;
+
+impl<'a> Responder<'a, DefaultStatusCode> {
+    fn new(respond: impl Respond + 'static) -> Self {
+        Responder {
+            respond: Box::new(respond),
+            type_state: PhantomData,
+            status: StatusCode::Ok,
+            headers: vec![],
+        }
+    }
+
     /// ...
-    pub fn send(self, response: impl payload::AsResponse) {
-        self.0.respond(response.as_response());
+    #[inline]
+    pub fn status(self, status: StatusCode) -> Responder<'a, CustomStatusCode> {
+        Responder {
+            respond: self.respond,
+            type_state: PhantomData,
+            status,
+            headers: self.headers,
+        }
+    }
+}
+
+impl<'a, TS> Responder<'a, TS> {
+    /// ...
+    #[inline]
+    pub fn header(mut self, name: &'a str, value: &'a [u8]) -> Self {
+        self.headers.push((name, value));
+        self
+    }
+
+    /// ...
+    #[inline]
+    pub fn send(self, body: impl payload::AsBody) {
+        let response = Response {
+            status: self.status,
+            headers: self.headers,
+            body: body.contents(),
+        };
+        self.respond.respond(response);
     }
 }
 
@@ -47,25 +91,41 @@ impl Responder {
 /// - You don't need to import the `Respond` trait to send responses.
 /// - It allows you to take non-object safe `impl IntoResponse`.
 trait Respond {
-    fn respond(self: Box<Self>, response: payload::Response);
+    fn respond(self: Box<Self>, response: Response);
 }
 
 /// ...
 ///
 /// Generic `ARGS` prevent conflicting implementations.
-pub trait IntoHandler<ARGS> {
+pub trait IntoHandler<ARGS, S> {
     /// ...
-    fn into_handler(self) -> Handler;
+    fn into_handler(self) -> Handler<S>;
 }
 
-impl<F: Fn(Responder) + 'static> IntoHandler<(Responder,)> for F {
-    fn into_handler(self) -> Handler {
-        Box::new(move |r, _| self(r))
+impl<F: Fn(Responder) + 'static, S> IntoHandler<(Responder<'_>,), S> for F {
+    fn into_handler(self) -> Handler<S> {
+        Box::new(move |r, _, _| self(r))
     }
 }
 
-impl<F: Fn(Responder, &Request) + 'static> IntoHandler<(Responder, &Request<'_>)> for F {
-    fn into_handler(self) -> Handler {
-        Box::new(move |r, request| self(r, request))
+impl<F: Fn(Responder, &S) + 'static, S> IntoHandler<(Responder<'_>, (), &S), S> for F {
+    fn into_handler(self) -> Handler<S> {
+        Box::new(move |r, _, state| self(r, state))
+    }
+}
+
+impl<F: Fn(Responder, &Request) + 'static, S> IntoHandler<(Responder<'_>, &Request<'_>, ()), S>
+    for F
+{
+    fn into_handler(self) -> Handler<S> {
+        Box::new(move |r, request, _| self(r, request))
+    }
+}
+
+impl<F: Fn(Responder, &Request, &S) + 'static, S> IntoHandler<(Responder<'_>, &Request<'_>, &S), S>
+    for F
+{
+    fn into_handler(self) -> Handler<S> {
+        Box::new(move |r, request, state| self(r, request, state))
     }
 }

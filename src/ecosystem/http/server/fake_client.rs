@@ -1,80 +1,145 @@
 //! ...
 
-use crate::ecosystem::http::payload::{AsRequest, Method, Response, StatusCode};
+use crate::ecosystem::http::payload::{AsBody, Method, Request, Response, StatusCode};
 use crate::ecosystem::http::server::route::Router;
 use crate::ecosystem::http::{Respond, Responder};
 use crate::sync::channel;
 
 /// ...
-pub struct FakeClient {
-    router: Router,
+pub struct FakeClient<S = ()> {
+    router: Router<S>,
     response: Option<OwnedResponse>,
 }
 
-impl FakeClient {
+impl<S> FakeClient<S> {
+    /// ...
+    #[inline]
+    pub fn new(router: Router<S>, state: S) -> Self {
+        FakeClient {
+            router: router.with_state(state),
+            response: None,
+        }
+    }
+
     /// Make a GET request.
-    pub fn get(&mut self, path: &str, request: impl AsRequest) -> Response {
-        self.request(Method::Get, path, request)
+    #[inline]
+    pub fn get<'a>(&'a mut self, path: &'a str) -> FakeRequestBuilder<'a, S> {
+        self.request(Method::Get, path)
     }
 
     /// Make a POST request.
-    pub fn post(&mut self, path: &str, request: impl AsRequest) -> Response {
-        self.request(Method::Post, path, request)
+    #[inline]
+    pub fn post<'a>(&'a mut self, path: &'a str) -> FakeRequestBuilder<'a, S> {
+        self.request(Method::Post, path)
     }
 
     /// Make a HEAD request.
-    pub fn head(&mut self, path: &str, request: impl AsRequest) -> Response {
-        self.request(Method::Head, path, request)
+    #[inline]
+    pub fn head<'a>(&'a mut self, path: &'a str) -> FakeRequestBuilder<'a, S> {
+        self.request(Method::Head, path)
     }
 
     /// Make a PUT request.
-    pub fn put(&mut self, path: &str, request: impl AsRequest) -> Response {
-        self.request(Method::Put, path, request)
+    #[inline]
+    pub fn put<'a>(&'a mut self, path: &'a str) -> FakeRequestBuilder<'a, S> {
+        self.request(Method::Put, path)
     }
 
     /// Make a DELETE request.
-    pub fn delete(&mut self, path: &str, request: impl AsRequest) -> Response {
-        self.request(Method::Delete, path, request)
+    #[inline]
+    pub fn delete<'a>(&'a mut self, path: &'a str) -> FakeRequestBuilder<'a, S> {
+        self.request(Method::Delete, path)
     }
 
     /// Make a CONNECT request.
-    pub fn connect(&mut self, path: &str, request: impl AsRequest) -> Response {
-        self.request(Method::Connect, path, request)
+    #[inline]
+    pub fn connect<'a>(&'a mut self, path: &'a str) -> FakeRequestBuilder<'a, S> {
+        self.request(Method::Connect, path)
     }
 
     /// Make a OPTIONS request.
-    pub fn options(&mut self, path: &str, request: impl AsRequest) -> Response {
-        self.request(Method::Options, path, request)
+    #[inline]
+    pub fn options<'a>(&'a mut self, path: &'a str) -> FakeRequestBuilder<'a, S> {
+        self.request(Method::Options, path)
     }
 
     /// Make a TRACE request.
-    pub fn trace(&mut self, path: &str, request: impl AsRequest) -> Response {
-        self.request(Method::Trace, path, request)
+    #[inline]
+    pub fn trace<'a>(&'a mut self, path: &'a str) -> FakeRequestBuilder<'a, S> {
+        self.request(Method::Trace, path)
     }
 
     /// Make a PATCH request.
-    pub fn patch(&mut self, path: &str, request: impl AsRequest) -> Response {
-        self.request(Method::Patch, path, request)
+    #[inline]
+    pub fn patch<'a>(&'a mut self, path: &'a str) -> FakeRequestBuilder<'a, S> {
+        self.request(Method::Patch, path)
     }
 
     /// Make a request with the given method.
-    pub fn request(&mut self, method: Method, path: &str, request: impl AsRequest) -> Response {
-        let (tx, rx) = channel::unbounded(); // TODO: channel::oneshot
-        let r = Responder(Box::new(FakeResponder(tx)));
-        let request = request.as_request(method, path, "");
-        self.router.handle(r, &request);
-        self.response = Some(rx.recv().expect("must respond..."));
-        Response::from(self.response.as_ref().unwrap())
+    #[inline]
+    pub fn request<'a>(&'a mut self, method: Method, path: &'a str) -> FakeRequestBuilder<'a, S> {
+        FakeRequestBuilder {
+            client: self,
+            method,
+            path,
+            query: Vec::new(),
+            headers: Vec::new(),
+        }
     }
 }
 
 /// Can't `impl<H: IntoHandler<ARGS>, ARGS> From<H> for FakeClient` since ARGS are unconstrained.
-impl From<Router> for FakeClient {
+impl From<Router<()>> for FakeClient<()> {
     fn from(router: Router) -> Self {
-        FakeClient {
-            router,
-            response: None,
-        }
+        FakeClient::new(router, ())
+    }
+}
+
+/// ...
+pub struct FakeRequestBuilder<'a, S> {
+    client: &'a mut FakeClient<S>,
+    method: Method,
+    path: &'a str,
+    query: Vec<(&'a str, &'a str)>,
+    headers: Vec<(&'a str, &'a [u8])>,
+}
+
+impl<'a, S> FakeRequestBuilder<'a, S> {
+    /// ...
+    #[inline]
+    pub fn query(mut self, name: &'a str, value: &'a str) -> Self {
+        self.query.push((name, value));
+        self
+    }
+
+    /// ...
+    #[inline]
+    pub fn header(mut self, name: &'a str, value: &'a [u8]) -> Self {
+        self.headers.push((name, value));
+        self
+    }
+
+    // /// ...
+    // pub fn headers(self) -> Self {
+    //     self
+    // }
+
+    /// ...
+    #[inline]
+    pub fn send(self, body: impl AsBody) -> Response<'a> {
+        let (tx, rx) = channel::unbounded(); // TODO: channel::oneshot
+        let r = Responder::new(FakeResponder(tx));
+        let query = serde_urlencoded::to_string(self.query).unwrap();
+        let request = Request::new(
+            self.method,
+            self.path,
+            &query,
+            self.headers,
+            body.contents(),
+        );
+        self.client.router.handle(r, &request);
+        self.client.response = Some(rx.recv().expect("must respond..."));
+        Response::from(self.client.response.as_ref().unwrap())
     }
 }
 
@@ -126,23 +191,45 @@ mod tests {
     use super::*;
     use crate::ecosystem::http::payload::StatusCode;
     use crate::ecosystem::http::Responder;
+    use crate::runtime::start;
 
     #[test]
     fn smoke() {
-        let app = Router::new().route(Method::Get, "/", |r: Responder| r.send(()));
-        let mut client = FakeClient::from(app);
+        start(|| {
+            let routes = Router::new().route(
+                Method::Get,
+                "/echo",
+                |r: Responder, request: &Request, state: &i32| {
+                    assert_eq!(request.raw_query(), "foo=bar&beep=boop");
+                    assert_eq!(request.query_params()["foo"], "bar");
+                    assert_eq!(request.query("foo"), Some("bar"));
+                    assert!(!request.raw_headers().is_empty());
+                    assert_eq!(request.headers()["foo"], "hello".as_bytes());
+                    assert_eq!(request.header("foo"), Some("hello".as_bytes()));
+                    assert_eq!(state, &123);
+                    r.send(request.body())
+                },
+            );
+            let mut client = FakeClient::new(routes, 123);
 
-        let response = client.get("/", ());
-
-        assert_eq!(response.status, StatusCode::Ok);
+            let response = client
+                .get("/echo")
+                .query("foo", "bar")
+                .query("beep", "boop")
+                .header("foo", b"hello")
+                .send("hello");
+            assert_eq!(response.status, StatusCode::Ok);
+            assert_eq!(response.body, b"hello");
+        })
+        .unwrap();
     }
 
     #[test]
     #[should_panic]
     fn panics_when_no_response_sent() {
-        let app = Router::new().route(Method::Get, "/", |_| {});
-        let mut client = FakeClient::from(app);
+        let routes = Router::new().route(Method::Get, "/", |_: Responder| {});
+        let mut client = FakeClient::from(routes);
 
-        client.get("/", ());
+        client.get("/").send(());
     }
 }

@@ -15,12 +15,13 @@ pub mod fake_client;
 pub mod route;
 
 /// ...
-pub fn serve<W: Write + 'static, R: Read + 'static>(
-    router: Router,
+pub fn serve<S: 'static, W: Write + 'static, R: Read + 'static>(
+    router: Router<S>,
+    state: S,
     connections: impl Iterator<Item = (W, R)>,
 ) {
     // TODO: don't need Rc for router when using scoped spawn
-    let router = Rc::new(router);
+    let router = Rc::new(router.with_state(state));
 
     for (w, r) in connections {
         let router = router.clone();
@@ -31,8 +32,8 @@ pub fn serve<W: Write + 'static, R: Read + 'static>(
     }
 }
 
-fn handle_connection(
-    router: &Router,
+fn handle_connection<S>(
+    router: &Router<S>,
     w: impl Write + 'static,
     r: impl Read + 'static,
 ) -> crate::IoResult<()> {
@@ -69,15 +70,15 @@ fn handle_connection(
                     continue;
                 }
 
-                let r = Responder(Box::new(RealResponder(Box::new(w))));
+                let r = Responder::new(RealResponder(Box::new(w)));
                 let (path, query) = parse_partial_uri(request.path.unwrap());
-                let request = Request {
-                    method: request.method.unwrap().parse().unwrap(),
+                let request = Request::new(
+                    request.method.unwrap().parse().unwrap(),
                     path,
                     query,
-                    headers: request.headers.iter().map(|h| (h.name, h.value)).collect(),
-                    body: &data[wire_size..(wire_size + body_size)],
-                };
+                    request.headers.iter().map(|h| (h.name, h.value)).collect(),
+                    &data[wire_size..(wire_size + body_size)],
+                );
                 router.handle(r, &request);
 
                 data.consume(wire_size);
@@ -210,8 +211,8 @@ mod tests {
             let server_addr = listener.local_addr().unwrap();
 
             let server = spawn(move || {
-                let app = Router::new().route(Method::Get, "/", index);
-                serve(app, listener.into_incoming());
+                let routes = Router::new().route(Method::Get, "/", index);
+                serve(routes, (), listener.into_incoming());
             });
 
             let (mut w, mut r) = tcp::connect((Ipv4Addr::LOCALHOST, server_addr.port())).unwrap();
@@ -243,8 +244,8 @@ mod tests {
             let server_addr = listener.local_addr().unwrap();
 
             let server = spawn(move || {
-                let app = Router::new().route(Method::Get, "/", index);
-                serve(app, listener.into_incoming());
+                let routes = Router::new().route(Method::Get, "/", index);
+                serve(routes, (), listener.into_incoming());
             });
 
             let (mut w, mut r) = tcp::connect((Ipv4Addr::LOCALHOST, server_addr.port())).unwrap();
