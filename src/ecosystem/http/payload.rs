@@ -11,7 +11,7 @@ pub struct Request<'a> {
     query: &'a str,
     query_map: OnceCell<ahash::HashMap<&'a str, &'a str>>,
     headers: Vec<(&'a str, &'a [u8])>,
-    header_map: OnceCell<ahash::HashMap<&'a str, &'a [u8]>>,
+    header_map: OnceCell<ahash::HashMap<String, &'a [u8]>>,
     body: &'a [u8],
 }
 
@@ -80,11 +80,11 @@ impl<'a> Request<'a> {
     /// ... lazy
     /// ignores duplicates (takes the last)
     #[inline]
-    pub fn headers(&self) -> &ahash::HashMap<&str, &[u8]> {
+    pub fn headers(&self) -> &ahash::HashMap<String, &[u8]> {
         self.header_map.get_or_init(|| {
             let mut map = ahash::HashMap::with_capacity(self.headers.len());
             for (name, value) in &self.headers {
-                map.insert(*name, *value);
+                map.insert(name.to_ascii_lowercase(), *value);
             }
             map
         })
@@ -94,7 +94,7 @@ impl<'a> Request<'a> {
     /// ignores duplicates (takes the last)
     #[inline]
     pub fn header(&self, name: &str) -> Option<&[u8]> {
-        self.headers().get(name).map(|v| *v)
+        self.headers().get(&name.to_ascii_lowercase()).map(|v| *v)
     }
 
     /// ...
@@ -282,4 +282,20 @@ mod tests {
         "".contents();
         "".as_bytes().contents();
     }
+
+    #[test]
+    fn case_insensitive_request_headers() {
+        let request = Request::new(
+            Method::Get,
+            "/",
+            "",
+            vec![("FOO", b"bar"), ("abc", b"xyz")],
+            b"",
+        );
+
+        assert_eq!(request.header("foo"), Some("bar".as_bytes()));
+        assert_eq!(request.header("ABC"), Some("xyz".as_bytes()));
+    }
+
+    // TODO: case_insensitive_response_headers
 }
