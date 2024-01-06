@@ -82,6 +82,7 @@ impl<'a, TS> Responder<'a, TS> {
             status: self.status,
             headers: self.headers,
             body: body.contents(),
+            content_type: body.content_type(),
         };
         self.respond.respond(response);
     }

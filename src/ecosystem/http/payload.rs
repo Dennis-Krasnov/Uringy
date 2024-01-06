@@ -110,6 +110,7 @@ pub struct Response<'a> {
     pub status: StatusCode,
     pub headers: Vec<(&'a str, &'a [u8])>,
     pub body: &'a [u8],
+    pub content_type: Option<&'a str>,
 }
 
 impl Response<'_> {

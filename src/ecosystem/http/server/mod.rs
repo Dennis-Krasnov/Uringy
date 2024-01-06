@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::io::{BufWriter, Read, Write};
 use std::rc::Rc;
+use std::time::SystemTime;
 
 use crate::circular_buffer;
 use crate::circular_buffer::circular_buffer;
@@ -171,15 +172,31 @@ fn serialize(mut writer: impl Write, response: Response) -> crate::IoResult<()> 
     // writer.write_all(response.status.canonical_reason().unwrap().as_bytes())?;
     writer.write_all(b"\r\n")?;
 
-    // FIXME: ugly
     writer.write_all("content-length".as_bytes())?;
     writer.write_all(b": ")?;
     writer.write_all(response.body.len().to_string().as_bytes())?;
     writer.write_all(b"\r\n")?;
 
+    if let Some(content_type) = response.content_type {
+        writer.write_all("content-type".as_bytes())?;
+        writer.write_all(b": ")?;
+        writer.write_all(content_type.as_bytes())?;
+        writer.write_all(b"\r\n")?;
+    }
+
+    writer.write_all("date".as_bytes())?;
+    writer.write_all(b": ")?;
+    writer.write_all(httpdate::fmt_http_date(SystemTime::now()).as_bytes())?;
+    writer.write_all(b"\r\n")?;
+
     writer.write_all(b"connection: close\r\n")?;
 
     for (name, value) in response.headers {
+        // TEST (put this in responder?)
+        assert!(!name.eq_ignore_ascii_case("content-length"));
+        assert!(!name.eq_ignore_ascii_case("content-type"));
+        assert!(!name.eq_ignore_ascii_case("date"));
+
         writer.write_all(name.as_bytes())?;
         writer.write_all(b": ")?;
         writer.write_all(value)?;

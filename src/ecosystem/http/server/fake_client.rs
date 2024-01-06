@@ -147,6 +147,7 @@ struct FakeResponder(channel::Sender<OwnedResponse>);
 
 impl Respond for FakeResponder {
     fn respond(self: Box<Self>, response: Response) {
+        // TODO: add content length, content-type, date headers here
         self.0.send(OwnedResponse::from(response)).unwrap();
     }
 }
@@ -156,6 +157,7 @@ struct OwnedResponse {
     status_code: StatusCode,
     headers: Vec<(String, Vec<u8>)>,
     body: Box<[u8]>,
+    content_type: Option<String>,
 }
 
 impl From<Response<'_>> for OwnedResponse {
@@ -168,6 +170,7 @@ impl From<Response<'_>> for OwnedResponse {
                 .map(|(k, v)| (k.to_string(), v.to_vec()))
                 .collect(),
             body: response.body.to_vec().into_boxed_slice(),
+            content_type: response.content_type.map(String::from),
         }
     }
 }
@@ -182,6 +185,7 @@ impl<'a> From<&'a OwnedResponse> for Response<'a> {
                 .map(|(k, v)| (k.as_str(), v.as_slice()))
                 .collect(),
             body: &response.body,
+            content_type: response.content_type.as_ref().map(String::as_str),
         }
     }
 }
